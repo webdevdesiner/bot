@@ -1,0 +1,28 @@
+{
+  "name": "bot-orion-peptides",
+  "version": "1.0.0",
+  "description": "Bot de Telegram para Orion Peptides com Gemini",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "orion",
+    "peptides",
+    "gemini"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.13.6",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "qrcode-terminal": "^0.12.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^6.0.1",
+    "whatsapp-web.js": "^1.34.6"
+  }
+}

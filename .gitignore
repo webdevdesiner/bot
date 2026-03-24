@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.db
+.DS_Store
+Thumbs.db
+
+# WhatsApp Web.js — sessão local (não versionar)
+.wwebjs_auth/
+.wwebjs_cache/
+sessions.json
+bot-orion-web.zip
