@@ -1,4 +1,5 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const axios = require('axios');
 const express = require('express');
 const path = require('path');
@@ -7,7 +8,12 @@ const { open } = require('sqlite');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const BIBLIOTECA_TECNICA_EXTRA = require('./biblioteca-tecnica-orion');
+const {
+  CATALOGO_UNIFICADO_PROMPT,
+  REGRAS_GLOBAIS_PROMPT,
+  NOME_PRODUTO_PARA_SKU_PROMPT,
+  SKU_PRODUTO
+} = require('./catalogo-unificado');
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -16,190 +22,13 @@ if (!GEMINI_API_KEY) {
   process.exit(1);
 }
 console.log('--- Configuração Carregada ---');
-console.log('Asaas API:', !!process.env.ASAAS_API_KEY);
-console.log('Asaas Webhook Token:', !!process.env.ASAAS_WEBHOOK_TOKEN);
+console.log('Mercado Pago (MP_ACCESS_TOKEN):', !!process.env.MP_ACCESS_TOKEN);
+console.log('Mercado Pago (MP_PUBLIC_KEY):', !!process.env.MP_PUBLIC_KEY);
+console.log('WEBHOOK_BASE_URL:', !!process.env.WEBHOOK_BASE_URL);
+console.log('Mercado Pago (MP_WEBHOOK_SECRET):', !!process.env.MP_WEBHOOK_SECRET);
 
 // ========== CONFIGURAÇÃO DO BOT ==========
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-
-// Catálogo estruturado para atualização rápida de preços/produtos.
-const PRODUTOS_ORION = {
-  '#OR-2026-028': { nome: 'Tirzepatide', dosagem: '20mg', preco: 'R$ 800,00', categoria: 'Emagrecimento', descricaoTecnica: 'Agonista GLP-1/GIP com foco em emagrecimento e controle glicêmico.' },
-  '#OR-2026-040': { nome: 'Tirzepatide', dosagem: '40mg', preco: 'R$ 1.500,00', categoria: 'Emagrecimento', descricaoTecnica: 'Alta concentração para protocolos avançados de performance metabólica.' },
-  '#OR-2026-060': { nome: 'Tirzepatide', dosagem: '60mg', preco: 'R$ 1.900,00', categoria: 'Emagrecimento', descricaoTecnica: 'Frasco de maior rendimento para protocolos prolongados.' },
-  '#OR-2026-025': { nome: 'Retatrutide', dosagem: '10mg', preco: 'R$ 1.100,00', categoria: 'Emagrecimento', descricaoTecnica: 'Agonista triplo com foco em redução de gordura e metabolismo.' },
-  '#OR-2026-020-20': { nome: 'Retatrutide', dosagem: '20mg', preco: 'R$ 1.700,00', categoria: 'Emagrecimento', descricaoTecnica: 'Versão de maior concentração para protocolos de alta performance.' },
-  '#OR-2026-021': { nome: 'BPC-157', dosagem: '10mg', preco: 'R$ 600,00', categoria: 'Reparação e Recovery', descricaoTecnica: 'Foco em regeneração tecidual e recuperação acelerada.' },
-  '#OR-2026-020': { nome: 'TB-500', dosagem: '10mg', preco: 'R$ 600,00', categoria: 'Reparação e Recovery', descricaoTecnica: 'Suporte à recuperação muscular e articular.' },
-  '#OR-2026-021-BT': { nome: 'BPC-157 + TB-500', dosagem: '5mg + 5mg', preco: '[A DEFINIR]', categoria: 'Reparação e Recovery', descricaoTecnica: 'Blend para protocolos integrados de recuperação.' },
-  '#OR-2026-016': { nome: 'GHK-Cu', dosagem: '50mg', preco: 'R$ 500,00', categoria: 'Reparação e Recovery', descricaoTecnica: 'Peptídeo com foco em reparação e suporte dérmico.' },
-  '#OR-2026-KL80': { nome: 'KLOW Blend (Recovery Stack)', dosagem: '80mg', preco: '[A DEFINIR]', categoria: 'Reparação e Recovery', descricaoTecnica: 'Stack orientado para recuperação física ampla.' },
-  '#OR-2026-019-CI': { nome: 'CJC-1295 + Ipamorelin', dosagem: '5mg + 5mg', preco: '[A DEFINIR]', categoria: 'Anti-aging e Ganho Muscular', descricaoTecnica: 'Blend com foco em suporte hormonal e composição corporal.' },
-  '#OR-2026-015': { nome: 'Tesamorelin', dosagem: '10mg', preco: 'R$ 650,00', categoria: 'Anti-aging e Ganho Muscular', descricaoTecnica: 'Peptídeo para suporte metabólico e performance.' },
-  '#OR-2026-018': { nome: 'NAD+', dosagem: '500mg', preco: 'R$ 450,00', categoria: 'Cognitivo e Nootrópicos', descricaoTecnica: 'Foco em energia celular e suporte cognitivo.' },
-  '#OR-2026-017': { nome: 'MOTS-C', dosagem: '40mg', preco: 'R$ 1.200,00', categoria: 'Cognitivo e Nootrópicos', descricaoTecnica: 'Peptídeo mitocondrial para energia e performance metabólica.' },
-  '#OR-2026-014': { nome: 'Água Estéril', dosagem: '10ml', preco: 'R$ 40,00', categoria: 'Suprimentos', descricaoTecnica: 'Diluente estéril para preparo de peptídeos liofilizados.' }
-};
-
-const CATALOGO_ORION_PROMPT = JSON.stringify(PRODUTOS_ORION, null, 2);
-
-const BIBLIOTECA_TECNICA_ORION = {
-  'MOTS-C': {
-    resumo: "Peptídeo derivado da mitocôndria, conhecido como 'mimético de exercício'. Ativa a via AMPK.",
-    beneficios: 'Queima de gordura visceral, melhora da sensibilidade à insulina e resistência física.',
-    protocolo_pesquisa: 'Padrão: 5mg (25 unidades) 3x na semana. Manutenção: 5mg a 10mg 1x na semana.',
-    reconstituicao: 'Frasco 40mg + 2ml de Água Bacteriostática. NÃO agitar vigorosamente.',
-    detalhe_importante: "O 'MOTS-C Sting': é normal sentir ardência ou coceira no local por alguns minutos."
-  },
-  'GHK-Cu': {
-    resumo: 'Padrão ouro da estética regenerativa. Íons de cobre para remodelamento dérmico.',
-    beneficios: 'Estimula colágeno em 70%, crescimento capilar e cicatrização pós-cirúrgica.',
-    protocolo_pesquisa: 'Iniciante: 1mg (4ui). Padrão: 2mg (8ui). Cicatrização: 3mg (12ui).',
-    reconstituicao: 'Frasco 50mg + 2ml de Água. A solução fica Azul Royal intenso. Esperar 15 min para dissolver.',
-    detalhe_importante: 'Evitar suplementos de Zinco próximos à aplicação (competem pela absorção).'
-  },
-  'BPC-157': {
-    resumo: 'Composto regenerativo derivado do suco gástrico. Foco em tecidos moles.',
-    beneficios: 'Cura de tendões, ligamentos, mucosa gástrica e modulação de inflamação.',
-    protocolo_pesquisa: 'Padrão: 250mcg a 500mcg, 2x ao dia.',
-    reconstituicao: 'Frasco 5mg + 2ml de Água. 10 unidades = 250mcg.'
-  },
-  Tirzepatide: {
-    resumo: 'Agonista duplo dos receptores GIP e GLP-1.',
-    beneficios: 'Controle glicêmico severo e redução drástica de peso (perda de apetite).',
-    protocolo_pesquisa: 'Inicial: 2.5mg/semana. Ajustes conforme tolerância até 15mg/semana.',
-    reconstituicao: 'Conforme dosagem do frasco (20mg/40mg/60mg) para 1ml ou 2ml.'
-  },
-  ghk_cu_50mg: {
-    nome: 'GHK-Cu 50mg',
-    categoria: 'Reparação e Recovery',
-    resumo: 'Padrão ouro regenerativo Orion. Peptídeo Azul Royal com foco em reparação avançada.',
-    pontosTecnicos: [
-      'Apresentação de alta densidade (50mg) para protocolos de regeneração.',
-      'Referência de pesquisa em protocolos de 1mg a 5mg.',
-      'Após reconstituição, manter sob refrigeração obrigatória (2°C a 8°C).'
-    ]
-  },
-  bpc_157_10mg: {
-    nome: 'BPC-157 10mg',
-    categoria: 'Reparação e Recovery',
-    resumo: 'Foco em regeneração de tecidos, tendões e mucosa gástrica.',
-    pontosTecnicos: [
-      'Peptídeo de pesquisa para suporte reparador em tecidos moles.',
-      'Usado em protocolos de recuperação estrutural e integridade gastrointestinal.'
-    ]
-  },
-  tb_500_10mg: {
-    nome: 'TB-500 10mg',
-    categoria: 'Reparação e Recovery',
-    resumo: 'Suporte de recuperação muscular e mobilidade articular.',
-    pontosTecnicos: [
-      'Aplicado em pesquisas de reparação e recuperação funcional.',
-      'Frequentemente estudado em conjunto com BPC-157.'
-    ]
-  },
-  blend_bpc_tb: {
-    nome: 'BPC-157 + TB-500 (5mg + 5mg)',
-    categoria: 'Reparação e Recovery',
-    resumo: 'Blend de recuperação integrado para protocolos de reparação.',
-    pontosTecnicos: [
-      'Combina dois peptídeos de recovery em um único frasco.',
-      'Foco em protocolos de suporte músculo-tendíneo e regeneração.'
-    ]
-  },
-  tirzepatide: {
-    nome: 'Tirzepatide (20mg/40mg/60mg)',
-    categoria: 'Emagrecimento',
-    resumo: 'Agonista metabólico GLP-1/GIP para pesquisas de emagrecimento e controle glicêmico.',
-    pontosTecnicos: [
-      'Atuação metabólica dual em protocolos de pesquisa para composição corporal.',
-      'Foco em redução de apetite, melhora glicêmica e eficiência metabólica.'
-    ]
-  },
-  retatrutide: {
-    nome: 'Retatrutide (10mg/20mg)',
-    categoria: 'Emagrecimento',
-    resumo: 'Agonista metabólico de nova geração para protocolos de emagrecimento e glicemia.',
-    pontosTecnicos: [
-      'Aplicado em pesquisas de perda de gordura e modulação metabólica.',
-      'Usado em protocolos avançados de controle glicêmico.'
-    ]
-  },
-  nad_plus_500mg: {
-    nome: 'NAD+ 500mg',
-    categoria: 'Cognitivo e Nootrópicos',
-    resumo: 'Suporte à bioenergia celular e desempenho mitocondrial.',
-    pontosTecnicos: [
-      'Pesquisa voltada para metabolismo energético e longevidade celular.'
-    ]
-  },
-  mots_c_40mg: {
-    nome: 'MOTS-C 40mg',
-    categoria: 'Cognitivo e Nootrópicos',
-    resumo: 'Peptídeo mitocondrial para performance metabólica e energia.',
-    pontosTecnicos: [
-      'Foco em pesquisas de eficiência metabólica e resistência energética.'
-    ]
-  },
-  tesamorelin_10mg: {
-    nome: 'Tesamorelin 10mg',
-    categoria: 'Anti-aging e Ganho Muscular',
-    resumo: 'Peptídeo para suporte de composição corporal e performance.',
-    pontosTecnicos: [
-      'Aplicado em protocolos de pesquisa com foco metabólico e físico.'
-    ]
-  },
-  cjc_ipamorelin_blend: {
-    nome: 'CJC-1295 + Ipamorelin (5mg + 5mg)',
-    categoria: 'Anti-aging e Ganho Muscular',
-    resumo: 'Blend de suporte hormonal para pesquisas de composição corporal.',
-    pontosTecnicos: [
-      'Foco em estudos de recuperação, qualidade de sono e performance.'
-    ]
-  },
-  agua_esteril_10ml: {
-    nome: 'Água Estéril 10ml',
-    categoria: 'Suprimentos',
-    resumo: 'Diluente para reconstituição de peptídeos liofilizados.',
-    pontosTecnicos: [
-      'Uso auxiliar no preparo técnico dos frascos liofilizados.'
-    ]
-  },
-  protocolo_reconstituicao_oficial: {
-    regra: 'Todos os peptídeos Orion são liofilizados e devem ser reconstituídos com Água Bacteriostática.',
-    padrao: 'Padrão de diluição: 1ml ou 2ml conforme volume e concentração do frasco.',
-    tempo_dissolucao: 'Para frascos densos (ex.: GHK-Cu 50mg), considerar até 15 minutos para dissolução completa.',
-    armazenamento: {
-      antes: 'Armazenar em local seco e fresco (ou freezer para longa duração).',
-      depois: 'Após reconstituição, refrigeração obrigatória entre 2°C e 8°C.'
-    }
-  },
-  seguranca_orion: {
-    pureza: 'Padrão Orion >99.8% de pureza laboratorial com certificação.',
-    aviso: 'Protocolos de dosagem citados são estritamente para fins de pesquisa e referência da plataforma Orion.'
-  },
-  ...BIBLIOTECA_TECNICA_EXTRA
-};
-
-const BIBLIOTECA_TECNICA_ORION_PROMPT = JSON.stringify(BIBLIOTECA_TECNICA_ORION, null, 2);
-
-const SKU_PRODUTO = {
-  '#OR-2026-028': 'Tirzepatide 20mg',
-  '#OR-2026-040': 'Tirzepatide 40mg',
-  '#OR-2026-060': 'Tirzepatide 60mg',
-  '#OR-2026-025': 'Retatrutide 10mg',
-  '#OR-2026-020-20': 'Retatrutide 20mg',
-  '#OR-2026-021': 'BPC-157 10mg',
-  '#OR-2026-020': 'TB-500 10mg',
-  '#OR-2026-021-BT': 'BPC-157 + TB-500 (5mg + 5mg)',
-  '#OR-2026-016': 'GHK-Cu 50mg',
-  '#OR-2026-KL80': 'KLOW Blend 80mg',
-  '#OR-2026-019-CI': 'CJC-1295 + Ipamorelin (5mg + 5mg)',
-  '#OR-2026-015': 'Tesamorelin 10mg',
-  '#OR-2026-018': 'NAD+ 500mg',
-  '#OR-2026-017': 'MOTS-C 40mg',
-  '#OR-2026-014': 'Água Estéril 10ml'
-};
 
 const CAMPOS_ENTREGA = ['nome', 'rua', 'numero', 'cep', 'cidade', 'bairro'];
 const CAMPOS_OBRIGATORIOS_ENTREGA = ['nome', 'rua', 'numero', 'cep', 'cidade'];
@@ -208,6 +37,8 @@ const DB_FILE = path.join(__dirname, 'orion.db');
 
 // ========== PROMPTS DE SETOR ==========
 const promptVendas = `
+IMPORTANTE: A regra de regra_sigilo_protocolo definida em REGRAS_GLOBAIS é absoluta e sobrepõe qualquer outra instrução técnica. Se o statusPagamento for BLOQUEADO, você deve seguir o script de retenção de informação técnica sem exceções.
+
 VOCÊ É O CONSULTOR DE LOGÍSTICA DA ORION PEPTIDES.
 MANTENHA SEMPRE UM TOM PROFISSIONAL, EDUCADO E DIRETO.
 
@@ -216,16 +47,16 @@ ACOLHIMENTO: Nunca dê o preço direto. Valide a dor/objetivo do cliente.
 AUTORIDADE ORION: Mencione sempre a "pureza laboratorial" ou "padrão ouro" da Orion.
 FOLLOW-UP: NUNCA termine a mensagem de forma passiva. Termine SEMPRE devolvendo uma pergunta.
 FORMATAÇÃO WHATSAPP: Use APENAS as formatações do WhatsApp: *texto* para negrito e _texto_ para itálico. PROIBIDO USAR TAGS HTML. Para listas, use apenas o símbolo de traço (-).
-LIMITAÇÃO: Responda apenas sobre os itens do PRODUTOS_ORION. Produto fora do catálogo? Diga que não trabalha com o item.
+LIMITAÇÃO: Responda apenas sobre os SKUs presentes no CATÁLOGO_UNIFICADO (objeto comercial + técnico por SKU). Produto fora do catálogo? Diga que não trabalha com o item.
 Se o cliente ainda estiver com dúvidas técnicas mesmo após o início do fluxo de vendas, responda de forma simples e direta sobre o benefício do produto antes de reforçar o link do carrinho.
-Você tem acesso total à BIBLIOTECA_TECNICA_ORION. Se o cliente fizer uma pergunta técnica enquanto estiver no fluxo de compra, NÃO mude o setor e NÃO chame o humano. Responda a dúvida de forma clara e direta usando a biblioteca e, em seguida, retome gentilmente para o fechamento do pedido.
-Confirmar definições biológicas (como "TB-500 é Timosina") é considerado suporte de vendas informativo, não consulta médica. Responda prontamente usando a biblioteca técnica.
+Você tem acesso total aos blocos comercial e tecnico de cada SKU no CATÁLOGO_UNIFICADO. Se o cliente fizer uma pergunta técnica enquanto estiver no fluxo de compra, NÃO mude o setor e NÃO chame o humano. Responda a dúvida de forma clara e direta usando esses dados e, em seguida, retome gentilmente para o fechamento do pedido.
+Confirmar definições biológicas (como "TB-500 é Timosina") é considerado suporte de vendas informativo, não consulta médica. Responda prontamente usando o CATÁLOGO_UNIFICADO (bloco tecnico do SKU correspondente).
 
 REGRA DE ALTERAÇÃO DE PEDIDO E CARRINHO (ESTRITAMENTE OBRIGATÓRIA):
 Você NÃO PODE gerar links de pagamento por conta própria. Se o cliente pedir para alterar o pedido (adicionar mais produtos, remover itens ou mudar dosagens), você deve elogiar a escolha, recalcular o valor total, mas OBRIGATORIAMENTE pedir para ele refazer o carrinho no site.
 NUNCA use formato de link Markdown como [texto](url). No WhatsApp, envie somente URL pura.
 Use esta orientação com este link exato:
-"Para garantir a segurança total da sua transação e gerar o link com os itens atualizados, nossos pedidos são criptografados diretamente pelo carrinho. Por favor, acesse rapidamente https://green-koala-180415.hostingersite.com/, monte seu protocolo atualizado e clique em finalizar. O sistema vai me mandar os dados aqui e eu gero seu link Asaas na hora!"
+"Para garantir a segurança total da sua transação e gerar o link com os itens atualizados, nossos pedidos são criptografados diretamente pelo carrinho. Por favor, acesse rapidamente https://green-koala-180415.hostingersite.com/, monte seu protocolo atualizado e clique em finalizar. O sistema vai me mandar os dados aqui e eu gero seu link de pagamento na hora!"
 
 REGRA DE LINK DE COMPRA (SEM ALTERAÇÃO DE PEDIDO):
 Se o cliente pedir apenas o link para comprar, finalizar ou montar pedido, responda direto e curto com a URL pura do carrinho:
@@ -242,24 +73,26 @@ Se o cliente fizer uma pergunta técnica que você não sabe responder ou que ex
 `.trim();
 
 const promptTecnico = `
+IMPORTANTE: A regra de regra_sigilo_protocolo definida em REGRAS_GLOBAIS é absoluta e sobrepõe qualquer outra instrução técnica. Se o statusPagamento for BLOQUEADO, você deve seguir o script de retenção de informação técnica sem exceções.
+
 Você é o Especialista Técnico da Orion Peptides, com tom científico, sério e acessível.
 Você deve soar como um bioquímico da Orion Peptides.
 
 FONTE ÚNICA:
-Sua ÚNICA e EXCLUSIVA fonte de informação técnica é a constante BIBLIOTECA_TECNICA_ORION.
+Sua ÚNICA e EXCLUSIVA fonte de informação técnica é o campo tecnico de cada SKU no CATÁLOGO_UNIFICADO, complementado pelo bloco REGRAS_GLOBAIS quando aplicável.
 Você não deve usar conhecimentos externos da internet que conflitem com nossa base.
-Se a informação estiver na biblioteca, use-a com autoridade científica.
+Se a informação estiver no catálogo, use-a com autoridade científica.
 
 REGRAS DE COMPORTAMENTO:
-- Seu objetivo é EDUCAR o cliente. Se ele perguntar sobre benefícios, mecanismos de ação ou por que escolher a Orion, responda de forma detalhada e persuasiva usando a BIBLIOTECA_TECNICA_ORION.
-- Confirmar definições biológicas (como "TB-500 é Timosina") é suporte informativo, não consulta médica. Responda de forma direta usando a BIBLIOTECA_TECNICA_ORION.
-- Protocolo oficial Orion de reconstituição: liofilizado + Água Bacteriostática; diluição 1ml ou 2ml conforme frasco; em frascos densos (como GHK-Cu 50mg), considerar até 15 minutos para dissolução completa.
-- Se o cliente perguntar "como usar", "como misturar" ou "onde guardar", responda com autoridade técnica baseada na BIBLIOTECA_TECNICA_ORION.
+- Seu objetivo é EDUCAR o cliente. Se ele perguntar sobre benefícios, mecanismos de ação ou por que escolher a Orion, responda de forma detalhada e persuasiva usando o CATÁLOGO_UNIFICADO.
+- Confirmar definições biológicas (como "TB-500 é Timosina") é suporte informativo, não consulta médica. Responda de forma direta usando o bloco tecnico do SKU certo.
+- Protocolo oficial Orion de reconstituição: siga REGRAS_GLOBAIS (protocolo_reconstituicao_oficial) e os campos de reconstituição do SKU em questão.
+- Se o cliente perguntar "como usar", "como misturar" ou "onde guardar", responda com autoridade técnica baseada no campo tecnico do SKU correspondente.
 - Você está PROIBIDO de dizer "não sei" ou chamar o suporte para perguntas sobre "quantas unidades usar" ou "qual o protocolo".
-- Para perguntas de protocolo/unidades, consulte a BIBLIOTECA_TECNICA_ORION e responda no formato:
+- Para perguntas de protocolo/unidades, consulte o campo tecnico do SKU e responda no formato:
 "Conforme os protocolos de referência de pesquisa da Orion, a dosagem padrão é X mg, o que equivale a Y unidades na seringa U-100".
 - Sempre adicione no final da resposta: "Lembrando que este dado é para fins de referência científica".
-- Para Tirzepatide 20mg (SKU #OR-2026-028), quando o cliente perguntar "como usar" ou "qual a dose", use os números exatos da BIBLIOTECA_TECNICA_ORION (2.5mg/semana na indução; exemplo de 25 unidades U-100 com 2ml de diluição), cite "Protocolos de Referência de Pesquisa Orion" e NÃO acione suporte humano para isso.
+- Para Tirzepatide 20mg (SKU #OR-2026-028), quando o cliente perguntar "como usar" ou "qual a dose", use os números exatos do objeto tecnico deste SKU (2.5mg/semana na indução; exemplo de 25 unidades U-100 com 2ml de diluição), cite "Protocolos de Referência de Pesquisa Orion" e NÃO acione suporte humano para isso.
 - Se houver dúvida sobre desconforto local com MOTS-C (ardência/coceira), acalme o cliente informando que o "MOTS-C Sting" pode ocorrer por alguns minutos e é um efeito local esperado em alguns casos.
 - Protocolos de dosagem citados são estritamente para fins de pesquisa e referência da plataforma Orion.
 - Se a pergunta exigir dosagem médica específica para caso clínico individual, diagnóstico, ajuste terapêutico personalizado ou qualquer decisão médica, responda EXATAMENTE:
@@ -268,32 +101,189 @@ REGRAS DE COMPORTAMENTO:
 SÓ use a tag [MUDAR_PARA_VENDAS] quando o cliente disser explicitamente "quero comprar", "como eu pago" ou "manda o link". NÃO mude para vendas apenas porque ele demonstrou interesse em um produto.
 `.trim();
 
-// ========== ASAAS – Pagamentos automáticos ==========
-async function criarPagamentoAsaas(valor, descricao, chatId = null) {
-  const cleanAsaasKey = '$aact_hmlg_000MzkwODA2MWY2OGM3MWRlMDU2NWM3MzJlNzZmNGZhZGY6OjZhYTNkZjkxLWExZDMtNGFlNC05OGQ2LTE3ZWY0Njg2ZTdmMTo6JGFhY2hfNTViNzFkYjYtYWMyZi00NDRlLWI5MjAtN2RlZjQxZTZmMzdm';
-  const apiUrl = "https://sandbox.asaas.com/api/v3";
-  const customerId = "cus_000007677917"; 
+/** Remove marcas do payload enviado a APIs externas (ex.: Gemini). Tokens são expandidos de volta no WhatsApp. */
+function scrubForExternalLLM(text) {
+  return String(text || '')
+    .replace(/Orion Peptides/gi, '⦅BR⦅')
+    .replace(/\bOrion\b/gi, '⦅OR⦅')
+    .replace(/Peptídeos/g, '⦅PD⦅')
+    .replace(/peptídeos/g, '⦅pd⦅');
+}
 
-  const asaasHeaders = {
-    'access_token': cleanAsaasKey,
-    'User-Agent': 'orion-bot/1.0',
-    'Content-Type': 'application/json'
+/** Restaura nomes apenas nas mensagens ao cliente no WhatsApp (pós-processamento). */
+function expandBrandTokensForWhatsApp(text) {
+  return String(text || '')
+    .replace(/⦅BR⦅/g, 'Orion Peptides')
+    .replace(/⦅OR⦅/g, 'Orion')
+    .replace(/⦅PD⦅/g, 'Peptídeos')
+    .replace(/⦅pd⦅/g, 'peptídeos');
+}
+
+const GEMINI_TOKEN_INSTRUCAO = `
+--- TOKENS (respostas ao cliente) ---
+Onde fizer sentido, use literalmente ⦅BR⦅ (nome completo da empresa), ⦅OR⦅ (nome curto da marca), ⦅PD⦅ ou ⦅pd⦅ (classe de moléculas, maiúsc./minúsc. conforme a frase).
+`.trim();
+
+// ========== MERCADO PAGO – Checkout (Preferences) ==========
+const MP_PREFERENCES_URL = 'https://api.mercadopago.com/checkout/preferences';
+const MP_PAYMENT_URL = 'https://api.mercadopago.com/v1/payments';
+
+function mercadoPagoAxiosConfig() {
+  const token = process.env.MP_ACCESS_TOKEN;
+  return {
+    headers: {
+      Authorization: token ? `Bearer ${token}` : '',
+      'Content-Type': 'application/json',
+      'User-Agent': 'atual-hub-checkout/1.0'
+    }
   };
+}
 
-  const payloadBase = {
-    customer: customerId,
-    billingType: 'UNDEFINED',
-    value: Number(valor),
-    dueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0],
-    description: descricao || 'Pedido Orion - Protocolo Personalizado',
-    externalReference: chatId ? `chat_${chatId}` : undefined
+/**
+ * Cria preferência de checkout no Mercado Pago (white-label: item genérico apenas).
+ * Retorna sandbox_init_point (link de teste) e id da preferência.
+ */
+async function criarPagamentoMercadoPago(valor, chatId = null) {
+  const token = process.env.MP_ACCESS_TOKEN;
+  const baseUrl = String(process.env.WEBHOOK_BASE_URL || '').replace(/\/+$/, '');
+  if (!token || !baseUrl || !chatId) {
+    console.error('[Mercado Pago] MP_ACCESS_TOKEN, WEBHOOK_BASE_URL ou chatId ausente.');
+    return null;
+  }
+
+  const notificationUrl = `${baseUrl}/api/v1/priority-client-update`;
+  const payload = {
+    items: [
+      {
+        title: 'Consultoria em Performance Digital',
+        description: 'Serviços de Marketing Digital - Atual Hub',
+        category_id: 'services',
+        quantity: 1,
+        unit_price: Number(valor),
+        currency_id: 'BRL'
+      }
+    ],
+    external_reference: `chat_${chatId}`,
+    notification_url: notificationUrl
   };
 
   try {
-    const { data: responseData } = await axios.post(`${apiUrl}/payments`, payloadBase, { headers: asaasHeaders });
-    return { invoiceUrl: responseData.invoiceUrl ?? null, paymentId: responseData.id ?? null };
-  } catch (error) {
-    console.error('[Asaas Error] Falha ao criar pagamento!');
+    const { data } = await axios.post(MP_PREFERENCES_URL, payload, mercadoPagoAxiosConfig());
+    const initPoint = data?.sandbox_init_point || null;
+    const preferenceId = data?.id ?? null;
+    return { initPoint, preferenceId };
+  } catch (err) {
+    console.error('[Mercado Pago] Falha ao criar preferência:', err.response?.status, err.response?.data || err.message);
+    return null;
+  }
+}
+
+function extractMercadoPagoPaymentId(req) {
+  const q = req.query || {};
+  if (String(q.topic || '').toLowerCase() === 'payment' && q['data.id'] != null && String(q['data.id']).trim() !== '') {
+    return String(q['data.id']).trim();
+  }
+  if (String(q.topic || '').toLowerCase() === 'payment' && q.id != null && String(q.id).trim() !== '') {
+    return String(q.id).trim();
+  }
+  const body = req.body || {};
+  if (String(body.type || '').toLowerCase() === 'payment' && body.data && body.data.id != null) {
+    return String(body.data.id).trim();
+  }
+  if (String(body.topic || '').toLowerCase() === 'payment' && body.id != null && String(body.id).trim() !== '') {
+    return String(body.id).trim();
+  }
+  if (String(body.topic || '').toLowerCase() === 'payment' && body.data && body.data.id != null) {
+    return String(body.data.id).trim();
+  }
+  return null;
+}
+
+/**
+ * data.id para o template de assinatura (query data.id ou body.data.id).
+ * Doc MP: IDs alfanuméricos vindos da URL devem ir em minúsculas.
+ */
+function mercadoPagoDataIdForSignature(req) {
+  const rawQuery = req.query?.['data.id'];
+  let id =
+    rawQuery != null && String(rawQuery).trim() !== ''
+      ? String(rawQuery).trim()
+      : '';
+  if (!id && req.body?.data?.id != null) {
+    id = String(req.body.data.id).trim();
+  }
+  if (!id) return '';
+  if (/[a-zA-F]/.test(id)) {
+    return id.toLowerCase();
+  }
+  return id;
+}
+
+function parseMercadoPagoXSignature(xSignature) {
+  let ts = null;
+  let v1 = null;
+  if (!xSignature || typeof xSignature !== 'string') return { ts, v1 };
+  const parts = xSignature.split(',');
+  for (const part of parts) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (key === 'ts') ts = value;
+    else if (key === 'v1') v1 = value;
+  }
+  return { ts, v1 };
+}
+
+function buildMercadoPagoSignatureManifest(dataId, requestId, ts) {
+  const chunks = [];
+  if (dataId) chunks.push(`id:${dataId}`);
+  if (requestId) chunks.push(`request-id:${requestId}`);
+  if (ts != null && String(ts) !== '') chunks.push(`ts:${ts}`);
+  return `${chunks.join(';')};`;
+}
+
+function mercadoPagoHmacHexEquals(secret, manifest, v1Received) {
+  const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
+  const recv = String(v1Received || '').trim().toLowerCase();
+  const exp = String(expected).trim().toLowerCase();
+  if (!/^[0-9a-f]+$/.test(recv) || !/^[0-9a-f]+$/.test(exp) || recv.length !== exp.length) {
+    return false;
+  }
+  try {
+    return crypto.timingSafeEqual(Buffer.from(exp, 'hex'), Buffer.from(recv, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+/** Valida x-signature conforme doc MP. Sem MP_WEBHOOK_SECRET, retorna ok (dev). */
+function mercadoPagoWebhookSignatureIsValid(req) {
+  const secret = String(process.env.MP_WEBHOOK_SECRET || '').trim();
+  if (!secret) return true;
+
+  const xSignature = req.get('x-signature') || req.headers['x-signature'];
+  const xRequestId = req.get('x-request-id') || req.headers['x-request-id'];
+  const { ts, v1 } = parseMercadoPagoXSignature(xSignature);
+  if (v1 == null || String(v1).trim() === '' || ts == null || String(ts).trim() === '') {
+    return false;
+  }
+
+  const dataId = mercadoPagoDataIdForSignature(req);
+  if (!dataId) return false;
+
+  const manifest = buildMercadoPagoSignatureManifest(dataId, xRequestId ? String(xRequestId).trim() : '', ts);
+  return mercadoPagoHmacHexEquals(secret, manifest, v1);
+}
+
+async function buscarPagamentoMercadoPago(paymentId) {
+  const token = process.env.MP_ACCESS_TOKEN;
+  if (!token || !paymentId) return null;
+  try {
+    const { data } = await axios.get(`${MP_PAYMENT_URL}/${paymentId}`, mercadoPagoAxiosConfig());
+    return data;
+  } catch (err) {
+    console.error('[Mercado Pago] Falha ao consultar pagamento:', paymentId, err.response?.status || err.message);
     return null;
   }
 }
@@ -532,7 +522,7 @@ function normalizeAdminWhatsAppId(rawId) {
 
 async function notificarFernandoTransbordo(chatId, motivo) {
   const adminChatId = process.env.ADMIN_CHAT_ID;
-  const alerta = `⚠️ ALERTA ORION: O cliente ${chatId} precisa de suporte humano/técnico. Motivo: ${motivo}.`;
+  const alerta = `⚠️ ALERTA TRANSBORDO: O cliente ${chatId} precisa de suporte humano/técnico. Motivo: ${motivo}.`;
 
   try {
     if (!adminChatId) {
@@ -646,8 +636,10 @@ Mensagem do cliente:
 ${texto}
 `.trim();
 
+  const promptExtracaoApi = scrubForExternalLLM(promptExtracao);
+
   try {
-    const result = await model.generateContent(promptExtracao);
+    const result = await model.generateContent(promptExtracaoApi);
     const raw = (result.response?.text?.() || '').trim();
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -691,6 +683,10 @@ client.on('ready', () => {
   console.log('✅ Bot do WhatsApp conectado e pronto para vender!');
 });
 
+/** Pós-PAID: mesma cópia no handler de mensagens e no webhook Mercado Pago. */
+const MSG_BOAS_VINDAS_POS_PAGAMENTO =
+  '✅ Pagamento Confirmado! Pagamento processado com sucesso em nosso Gateway Internacional. Agora, para garantirmos a agilidade no seu envio, por favor, confirme os dados para a Documentação de Embarque (Shipping Address) — Nome, Rua, Número, CEP e Cidade.';
+
 async function sendHumanizedMessage(chatId, text) {
   try {
     const chat = await client.getChatById(chatId);
@@ -698,8 +694,9 @@ async function sendHumanizedMessage(chatId, text) {
     // Delay de 3 a 5 segundos para simular humano digitando
     const delay = Math.floor(Math.random() * (5000 - 3000 + 1) + 3000);
     await new Promise(resolve => setTimeout(resolve, delay));
-    await client.sendMessage(chatId, text);
-    await appendMessageHistory(chatId, 'assistant', text);
+    const textoCliente = expandBrandTokensForWhatsApp(text);
+    await client.sendMessage(chatId, textoCliente);
+    await appendMessageHistory(chatId, 'assistant', textoCliente);
   } catch (err) {
     console.error('Erro ao enviar mensagem humanizada:', err);
   }
@@ -738,8 +735,9 @@ client.on('message', async (msg) => {
       await sendHumanizedMessage(chatId, 'Recebi seu áudio. Um instante enquanto analiso com precisão laboratorial... 🧬');
       try {
         const promptTranscricao = `Transcreva e entenda o áudio do cliente. ${session.paymentStatus === 'PAID' ? 'Pagamento confirmado. Solicite dados de entrega.' : ''}`;
+        const promptTranscricaoApi = scrubForExternalLLM(`${promptTranscricao}\n${GEMINI_TOKEN_INSTRUCAO}`);
         const result = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: promptTranscricao }, { inlineData: { mimeType: media.mimetype, data: media.data } }] }]
+          contents: [{ role: 'user', parts: [{ text: promptTranscricaoApi }, { inlineData: { mimeType: media.mimetype, data: media.data } }] }]
         });
         const textResponse = result.response?.text?.() || '';
         await sendHumanizedMessage(chatId, textResponse);
@@ -774,13 +772,13 @@ client.on('message', async (msg) => {
     let paymentId = null;
 
     if (valorTotal > 0) {
-      const paymentResult = await criarPagamentoAsaas(valorTotal, 'Pedido Orion', chatId);
-      if (paymentResult?.invoiceUrl) {
-        invoiceUrl = paymentResult.invoiceUrl;
+      const paymentResult = await criarPagamentoMercadoPago(valorTotal, chatId);
+      if (paymentResult?.initPoint) {
+        invoiceUrl = paymentResult.initPoint;
         linkPagamento = invoiceUrl;
       }
-      if (paymentResult?.paymentId) {
-        paymentId = paymentResult.paymentId;
+      if (paymentResult?.preferenceId) {
+        paymentId = paymentResult.preferenceId;
         await setPaymentSession(paymentId, chatId, { status: 'PENDING', value: valorTotal, invoiceUrl });
       }
     }
@@ -833,7 +831,7 @@ client.on('message', async (msg) => {
     // Saudação pós-pagamento: enviar apenas uma única vez por cliente.
     if (!session.paymentWelcomeSent) {
       await updateSession(chatId, { paymentWelcomeSent: true });
-      await sendHumanizedMessage(chatId, '✅ Pagamento Confirmado! Recebemos sua confirmação aqui no sistema da Orion Peptides. Agora, para garantirmos a agilidade no seu envio, por favor, envie seu endereço completo (Nome, Rua, Número, CEP e Cidade).');
+      await sendHumanizedMessage(chatId, MSG_BOAS_VINDAS_POS_PAGAMENTO);
       return;
     }
 
@@ -901,31 +899,35 @@ client.on('message', async (msg) => {
     : '';
   let setorAtivo = session.setorAtual || 'TECNICO';
   const promptSetorAtivo = setorAtivo === 'TECNICO' ? promptTecnico : promptVendas;
-  const bibliotecaTecnicaContexto = `\n--- BIBLIOTECA_TECNICA_ORION (JSON) ---\n${BIBLIOTECA_TECNICA_ORION_PROMPT}`;
+  const statusPagamento = session.paymentStatus === 'PAID' ? 'LIBERADO' : 'BLOQUEADO';
+  const catalogoUnificadoContexto = `\n--- CATÁLOGO_UNIFICADO (JSON: comercial + tecnico por SKU) ---\n${CATALOGO_UNIFICADO_PROMPT}\n--- REGRAS_GLOBAIS (JSON) ---\n${REGRAS_GLOBAIS_PROMPT}\n--- MAPEAMENTO NOME DO PRODUTO (LP/WHATSAPP) → SKU ---\n${NOME_PRODUTO_PARA_SKU_PROMPT}`;
   const faltantesEntregaNoPrompt = getMissingDeliveryFields(session.dadosEntrega || { nome: '', rua: '', numero: '', cep: '', cidade: '', bairro: '' });
   const instrucaoPosCadastroConcluido = session.paymentStatus === 'PAID' && faltantesEntregaNoPrompt.length === 0
     ? `\n--- INSTRUÇÃO EXTRA PÓS-CADASTRO ---\nO cadastro de endereço já foi finalizado com sucesso. Se o cliente perguntar qual é o endereço, confirme os dados que temos de forma organizada:\nNome: ${session.dadosEntrega?.nome || ''}\nRua: ${session.dadosEntrega?.rua || ''}\nNúmero: ${session.dadosEntrega?.numero || ''}\nCEP: ${session.dadosEntrega?.cep || ''}\nCidade: ${session.dadosEntrega?.cidade || ''}\nBairro: ${session.dadosEntrega?.bairro || 'N/I'}\nSe ele apenas agradecer ou fizer um comentário aleatório, seja breve e profissional.`
     : '';
-  const statusPagamento = session.paymentStatus === 'PAID' ? 'O pagamento já foi CONFIRMADO.' : 'O pagamento AINDA NÃO foi confirmado.';
-  
+  const statusPagamentoDescricao =
+    session.paymentStatus === 'PAID' ? 'O pagamento já foi CONFIRMADO.' : 'O pagamento AINDA NÃO foi confirmado.';
+  const contextoStatusPagamentoCliente = `\n--- STATUS DE PAGAMENTO DESTE CLIENTE (SIGILO DE PROTOCOLO) ---\nstatusPagamento: ${statusPagamento}\n(LIBERADO = pagamento confirmado no sistema; BLOQUEADO = ainda não confirmado. Aplique REGRAS_GLOBAIS.regra_sigilo_protocolo.)\n`;
+
   const prompt = `
   --- BASE DE DADOS ---
-  PRODUTOS_ORION (JSON):
-  ${CATALOGO_ORION_PROMPT}
+  ${catalogoUnificadoContexto}
   --- PROMPT DO SETOR ---
   ${promptSetorAtivo}
   ${contextoPedido}
   ${dadosEntregaContexto}
+  ${contextoStatusPagamentoCliente}
   ${historicoRecenteContexto}
-  ${bibliotecaTecnicaContexto}
   ${instrucaoPosCadastroConcluido}
   --- STATUS ---
-  ${statusPagamento}
+  ${statusPagamentoDescricao}
   MENSAGEM DO CLIENTE: ${userMessage}
   `;
 
+  const promptParaApi = scrubForExternalLLM(`${prompt}\n${GEMINI_TOKEN_INSTRUCAO}`);
+
   try {
-    const result = await model.generateContent(prompt);
+    const result = await model.generateContent(promptParaApi);
     let text = result.response.text();
     if (text) {
       if (text.includes('[MUDAR_PARA_VENDAS]')) {
@@ -956,9 +958,10 @@ client.on('message', async (msg) => {
   }
 });
 
-// ========== EXPRESS & WEBHOOK ASAAS ==========
+// ========== EXPRESS & WEBHOOK MERCADO PAGO ==========
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.get('/debug/session/:chatId', async (req, res) => {
   try {
@@ -1017,43 +1020,74 @@ app.get('/debug/session/:chatId', async (req, res) => {
   }
 });
 
-app.post('/webhook/asaas', async (req, res) => {
-  const webhookToken = req.headers['asaas-access-token'];
-  if (!process.env.ASAAS_WEBHOOK_TOKEN || webhookToken !== process.env.ASAAS_WEBHOOK_TOKEN) return res.sendStatus(401);
+async function handleMercadoPagoNotification(req, res) {
+  const topic = String(req.query?.topic || req.body?.topic || req.body?.type || '').trim();
+  const paymentIdPreview = extractMercadoPagoPaymentId(req);
+  console.log(
+    `[Webhook MP] Recebido | method=${req.method} | topic/type=${topic || 'N/A'} | paymentId=${paymentIdPreview || 'N/A'}`
+  );
 
-  const event = req.body?.event;
-  const payment = req.body?.payment;
-
-  if (event === 'PAYMENT_RECEIVED' || event === 'PAYMENT_CONFIRMED') {
-    const paymentId = payment?.id;
-    let chatIdFromPayment = await getChatIdByPaymentId(paymentId);
-    
-    if (!chatIdFromPayment && typeof payment?.externalReference === 'string') {
-      chatIdFromPayment = payment.externalReference.replace('chat_', '');
-    }
-
-    if (chatIdFromPayment) {
-      const session = await getOrCreateSession(chatIdFromPayment);
-      const jaEnviouBoasVindasPagamento = !!session.paymentWelcomeSent;
-      await saveSession(chatIdFromPayment, { ...session, paymentStatus: 'PAID', paymentWelcomeSent: true });
-      await setPaymentSession(paymentId, chatIdFromPayment, {
-        status: 'PAID',
-        value: Number(payment?.value || 0),
-        invoiceUrl: payment?.invoiceUrl || session.lastLink || null
-      });
-      // Envia confirmação automática apenas uma vez por conversa
-      if (!jaEnviouBoasVindasPagamento) {
-        await sendHumanizedMessage(chatIdFromPayment, '✅ Pagamento Confirmado! Recebemos sua confirmação aqui no sistema da Orion Peptides. Agora, para garantirmos a agilidade no seu envio, por favor, envie seu endereço completo (Nome, Rua, Número, CEP e Cidade).');
-      }
-    }
-
-    const adminChatId = process.env.ADMIN_CHAT_ID;
-    if (adminChatId) {
-      client.sendMessage(adminChatId, `💰 *PAGAMENTO APROVADO!* \nValor: R$ ${payment?.value}\nID: ${paymentId}`);
-    }
+  if (!mercadoPagoWebhookSignatureIsValid(req)) {
+    const xSignature = req.get('x-signature') || req.headers['x-signature'];
+    const xRequestId = req.get('x-request-id') || req.headers['x-request-id'];
+    const dataIdForSignature = mercadoPagoDataIdForSignature(req);
+    console.warn(
+      `[Webhook MP] Assinatura inválida | has_x_signature=${!!xSignature} | has_x_request_id=${!!xRequestId} | data.id=${dataIdForSignature || 'N/A'}`
+    );
+    return res.status(403).send('Invalid Signature');
   }
-  return res.sendStatus(200);
-});
+
+  res.sendStatus(200);
+
+  const mpPaymentId = paymentIdPreview;
+  if (!mpPaymentId) {
+    console.log('[Webhook MP] Ignorado: notificação sem paymentId.');
+    return;
+  }
+
+  const payment = await buscarPagamentoMercadoPago(mpPaymentId);
+  if (!payment || payment.status !== 'approved') {
+    console.log(`[Webhook MP] Pagamento não aprovado | paymentId=${mpPaymentId} | status=${payment?.status || 'N/A'}`);
+    return;
+  }
+
+  const extRef = typeof payment.external_reference === 'string' ? payment.external_reference.trim() : '';
+  let chatIdFromPayment = null;
+  if (extRef.startsWith('chat_')) {
+    chatIdFromPayment = extRef.replace(/^chat_/, '');
+  }
+  if (!chatIdFromPayment) {
+    chatIdFromPayment = await getChatIdByPaymentId(mpPaymentId);
+  }
+
+  if (!chatIdFromPayment) {
+    console.warn('[Mercado Pago Webhook] Pagamento aprovado sem external_reference/chatId:', mpPaymentId);
+    return;
+  }
+
+  const valorPago = Number(payment.transaction_amount ?? 0);
+  const session = await getOrCreateSession(chatIdFromPayment);
+  const jaEnviouBoasVindasPagamento = !!session.paymentWelcomeSent;
+
+  await saveSession(chatIdFromPayment, { ...session, paymentStatus: 'PAID', paymentWelcomeSent: true });
+  await setPaymentSession(mpPaymentId, chatIdFromPayment, {
+    status: 'PAID',
+    value: valorPago,
+    invoiceUrl: session.lastLink || null
+  });
+
+  if (!jaEnviouBoasVindasPagamento) {
+    await sendHumanizedMessage(chatIdFromPayment, MSG_BOAS_VINDAS_POS_PAGAMENTO);
+  }
+
+  const adminChatId = process.env.ADMIN_CHAT_ID;
+  if (adminChatId) {
+    client.sendMessage(adminChatId, `💰 *PAGAMENTO APROVADO!* \nValor: R$ ${valorPago}\nID: ${mpPaymentId}`);
+  }
+  console.log(`[Webhook MP] Pagamento aprovado processado | paymentId=${mpPaymentId} | chatId=${chatIdFromPayment}`);
+}
+
+app.post('/api/v1/priority-client-update', handleMercadoPagoNotification);
 
 const PORT = Number(process.env.PORT) || 3000;
 async function startServer() {

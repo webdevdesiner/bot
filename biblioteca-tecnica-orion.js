@@ -140,7 +140,7 @@ module.exports = {
   },
   aod_9604_5mg_or_2026_005: {
     substancia: 'AOD-9604 (5mg)',
-    sku: '#OR-2026-005',
+    sku: '#OR-2026-AOD5',
     resumo_tecnico:
       'Fragmento peptídico C-terminal do HGH (176-191), conhecido como peptídeo da queima de gordura por perfil altamente lipolítico.',
     mecanismo:
@@ -237,7 +237,7 @@ module.exports = {
   },
   retatrutide_20mg_or_2026_031: {
     substancia: 'Retatrutide (20mg)',
-    sku: '#OR-2026-031',
+    sku: '#OR-2026-020-20',
     resumo_tecnico:
       'Versão de concentração intermediária do agonista triplo (GLP-1, GIP e Glucagon), desenhada para protocolos com escalonamento de dose e maior rendimento por frasco.',
     mecanismo:
@@ -662,7 +662,7 @@ module.exports = {
   },
   ss_31_elamipretide_10mg_or_2026_031_ss: {
     substancia: 'SS-31 (Elamipretide) - 10mg',
-    sku: '#OR-2026-031-SS',
+    sku: '#OR-2026-SS10',
     resumo_tecnico:
       'Peptídeo de quarta geração voltado para proteção e estabilização mitocondrial, com afinidade pela cardiolipina da membrana interna.',
     mecanismo:
@@ -769,7 +769,7 @@ module.exports = {
   },
   slu_pp_332_5mg_or_2026_033_slu: {
     substancia: 'SLU-PP-332 (5mg)',
-    sku: '#OR-2026-033-SLU',
+    sku: '#OR-2026-SLU5',
     resumo_tecnico:
       'Agonista pan-ERR (ERRα/ERRβ/ERRγ), considerado mimético de exercício de nova geração para modulação metabólica avançada.',
     mecanismo:
@@ -820,5 +820,112 @@ module.exports = {
     link_ficha_tecnica: 'https://orionpeptideos.com/substancias/slu-pp-332-5mg/',
     frase_operacional:
       'Em atendimento, explicar que o SLU-PP-332 atua nos recetores ERR para favorecer uso de gordura como combustível e elevar capacidade de treino.'
+  },
+  tirzepatide_120mg_or_2026_120: {
+    substancia: 'Tirzepatide (120mg)',
+    sku: '#OR-2026-120',
+    resumo_tecnico:
+      'Apresentação de alta carga do agonista duplo GIP/GLP-1 para protocolos de pesquisa com escalonamento avançado e maior rendimento por frasco.',
+    reconstituicao: {
+      solvente: 'Recomendado 2ml de Água Bacteriostática; ajustar volume conforme precisão desejada em microdoses.',
+      processo: 'Diluir sem agitar vigorosamente; movimentos circulares suaves até dissolução completa.'
+    },
+    armazenamento: {
+      pos_reconstituicao: 'Refrigeração obrigatória entre 2°C e 8°C.'
+    },
+    protocolo_referencia_pesquisa: {
+      nota: 'Seguir protocolos de referência Orion para Tirzepatide com ajuste proporcional à concentração do frasco de 120mg.'
+    },
+    link_ficha_tecnica: 'https://orionpeptideos.com/substancias/tirzepatide/',
+    frase_operacional:
+      'Posicionar como linha de máximo rendimento para pesquisadores que já dominam titulação em frascos menores.'
+  },
+  hgh_frag_15mg_or_2026_hgh15: {
+    substancia: 'HGH Fragment 176-191 (15mg)',
+    sku: '#OR-2026-HGH15',
+    resumo_tecnico:
+      'Fragmento lipolítico associado ao eixo do hormônio do crescimento; foco em pesquisas de composição corporal e oxidação de gordura.',
+    reconstituicao: {
+      solvente: '2ml de Água Bacteriostática (referência comum para doses em mcg/mg).',
+      processo: 'Swirl suave; evitar agitação mecânica.'
+    },
+    armazenamento: { pos_reconstituicao: 'Refrigeração entre 2°C e 8°C.' },
+    protocolo_referencia_pesquisa: {
+      nota: 'Dosagens típicas em pesquisa ficam na faixa de microgramas; calibrar conforme concentração final pós-reconstituição.'
+    },
+    frase_operacional: 'Diferenciar de GH completo: fragmento sem eixo de IGF-1 sistêmico típico do GH nativo.'
+  },
+  selank_11mg_or_2026_slk11: {
+    substancia: 'Selank (11mg)',
+    sku: '#OR-2026-SLK11',
+    resumo_tecnico:
+      'Peptídeo anxiolítico nootrópico de pesquisa (análogo sintético relacionado a tuftsin), com foco em eixo GABA/modulação do humor.',
+    reconstituicao: {
+      solvente: '1–2ml de Água Bacteriostática conforme precisão de volume.',
+      processo: 'Reconstituição delicada; não agitar.'
+    },
+    armazenamento: { pos_reconstituicao: 'Refrigeração entre 2°C e 8°C.' },
+    protocolo_referencia_pesquisa: {
+      nota: 'Protocolos de pesquisa costumam usar doses baixas (mcg); ajustar à concentração final.'
+    },
+    frase_operacional: 'Enfatizar perfil cognitivo/ansiedade experimental em modelos de pesquisa.'
+  },
+  semax_11mg_or_2026_smx11: {
+    substancia: 'Semax (11mg)',
+    sku: '#OR-2026-SMX11',
+    resumo_tecnico:
+      'Peptídeo nootrópico derivado de ACTH (fragmento 4-7), estudado em foco, neuroproteção e fluxo cerebral em pesquisa.',
+    reconstituicao: {
+      solvente: '1–2ml de Água Bacteriostática.',
+      processo: 'Swirl suave até dissolução.'
+    },
+    armazenamento: { pos_reconstituicao: 'Refrigeração entre 2°C e 8°C.' },
+    protocolo_referencia_pesquisa: {
+      nota: 'Doses de referência em pesquisa são frequentemente intranasais ou injetáveis em microgramas; seguir protocolo do laboratório.'
+    },
+    frase_operacional: 'Comparar com Selank: Semax com viés mais cognitivo/energia; Selank mais ansiolítico em relatos de pesquisa.'
+  },
+  pt_141_10mg_or_2026_pt141: {
+    substancia: 'PT-141 (Bremelanotide) (10mg)',
+    sku: '#OR-2026-PT141',
+    resumo_tecnico:
+      'Agonista de receptores MC (melanocortina) estudado em contextos de resposta sexual e libido em modelos de pesquisa.',
+    reconstituicao: {
+      solvente: '2ml de Água Bacteriostática (referência típica para titulação).',
+      processo: 'Evitar calor e agitação vigorosa.'
+    },
+    armazenamento: { pos_reconstituicao: 'Refrigeração entre 2°C e 8°C.' },
+    protocolo_referencia_pesquisa: {
+      nota: 'Respeitar intervalos mínimos entre protocolos em estudos; hipertensão/flush são pontos de atenção em literatura.'
+    },
+    alertas: ['Monitorar pressão arterial em protocolos sensíveis.'],
+    frase_operacional: 'Uso estritamente para pesquisa laboratorial; não prometer uso clínico.'
+  },
+  ipamorelin_10mg_or_2026_ipa10: {
+    substancia: 'Ipamorelin (10mg)',
+    sku: '#OR-2026-IPA10',
+    resumo_tecnico:
+      'Secretagogo de GH (pentapeptídeo) com alta especificidade no receptor GHS-1a; estímulo pulsátil de GH com baixo impacto em cortisol/prolactina em modelos de pesquisa.',
+    reconstituicao: {
+      solvente: '2ml de Água Bacteriostática.',
+      processo: 'Swirl suave.'
+    },
+    armazenamento: { pos_reconstituicao: 'Refrigeração entre 2°C e 8°C.' },
+    protocolo_referencia_pesquisa: {
+      nota: 'Frequências comuns em pesquisa: 1–3x/dia; ajustar mcg conforme solução final.'
+    },
+    frase_operacional: 'Diferenciar do blend CJC+IPA: aqui apenas Ipamorelin isolado para pesquisa.'
+  },
+  agua_bacteriostatica_10ml_or_2026_bac10: {
+    substancia: 'Água Bacteriostática (10ml)',
+    sku: '#OR-2026-BAC10',
+    resumo_tecnico:
+      'Solvente estéril com conservante para reconstituição de peptídeos liofilizados em laboratório de pesquisa.',
+    uso: 'Diluente para preparo de frascos liofilizados; não é o mesmo produto que água estéril para irrigação sem conservante.',
+    reconstituicao: {
+      aplicacao: 'Utilizar agulha/seringa estéril; manter assepsia ao perfurar o frasco.',
+      armazenamento: 'Conforme rótulo; tipicamente local fresco após aberto, respeitando validade.'
+    },
+    frase_operacional: 'Enfatizar uso exclusivo como diluente para insumos de pesquisa, nunca como veículo injetável isolado sem protocolo.'
   }
 };
