@@ -192,8 +192,10 @@ const REGRAS_GLOBAIS = {
       'Enfatize que o Frete Grátis é um benefício ativado pelo envio do Kit junto ao produto principal.',
     argumento_pureza:
       'Reforce que utilizar as seringas corretas e a água bacteriostática da Orion garante a pureza e a eficácia do protocolo de pesquisa.',
+    fluxo_obrigatorio:
+      'O fechamento ocorre no site: o cliente monta o carrinho na loja oficial, finaliza o checkout e recebe o link de pagamento pelo fluxo do carrinho (que retorna a este atendimento). Não peça endereço de entrega antes do pagamento confirmado.',
     fechador:
-      "Fechador de vendas sugerido: 'E o melhor de tudo: para garantir que sua pesquisa comece com perfeição, eu vou incluir de presente para você o nosso Kit Orion com todos os insumos e o frete por nossa conta. Posso fechar seu pedido com esse brinde?'"
+      "Fechador sugerido (sem pedir endereço antes de pagar): destaque o Kit Orion de brinde + frete e oriente: 'Para finalizar com segurança, acesse nossa loja, monte seu carrinho com o protocolo e finalize — o checkout gera seu link de pagamento e o sistema segue por aqui. Assim que o pagamento for confirmado, pedimos seus dados de entrega.'"
   }
 };
 

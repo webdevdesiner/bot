@@ -1,14 +1,31 @@
-require('dotenv').config();
+const path = require('path');
+const fs = require('fs');
+const dotenv = require('dotenv');
+
+const dotenvCandidates = [
+  process.env.APP_USER_DATA_PATH ? path.join(process.env.APP_USER_DATA_PATH, '.env') : null,
+  process.resourcesPath ? path.join(process.resourcesPath, '.env') : null,
+  path.join(__dirname, '.env'),
+  path.join(process.cwd(), '.env')
+].filter(Boolean);
+const dotenvPath = dotenvCandidates.find((p) => fs.existsSync(p));
+if (dotenvPath) {
+  dotenv.config({ path: dotenvPath });
+} else {
+  dotenv.config();
+}
+
 const crypto = require('crypto');
 const axios = require('axios');
 const express = require('express');
-const path = require('path');
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
+  CATALOGO_UNIFICADO,
   CATALOGO_UNIFICADO_PROMPT,
   REGRAS_GLOBAIS_PROMPT,
   NOME_PRODUTO_PARA_SKU_PROMPT,
@@ -26,6 +43,7 @@ console.log('Mercado Pago (MP_ACCESS_TOKEN):', !!process.env.MP_ACCESS_TOKEN);
 console.log('Mercado Pago (MP_PUBLIC_KEY):', !!process.env.MP_PUBLIC_KEY);
 console.log('WEBHOOK_BASE_URL:', !!process.env.WEBHOOK_BASE_URL);
 console.log('Mercado Pago (MP_WEBHOOK_SECRET):', !!process.env.MP_WEBHOOK_SECRET);
+console.log('Gerente de processo (GERENTE_PROCESSO_CHAT_ID):', !!process.env.GERENTE_PROCESSO_CHAT_ID);
 
 // ========== CONFIGURAÇÃO DO BOT ==========
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
@@ -33,19 +51,83 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const CAMPOS_ENTREGA = ['nome', 'rua', 'numero', 'cep', 'cidade', 'bairro'];
 const CAMPOS_OBRIGATORIOS_ENTREGA = ['nome', 'rua', 'numero', 'cep', 'cidade'];
 let db = null;
-const DB_FILE = path.join(__dirname, 'orion.db');
+const APP_USER_DATA_PATH = String(process.env.APP_USER_DATA_PATH || '').trim();
+const PERSIST_BASE_DIR = APP_USER_DATA_PATH || __dirname;
+if (!fs.existsSync(PERSIST_BASE_DIR)) {
+  fs.mkdirSync(PERSIST_BASE_DIR, { recursive: true });
+}
+const DB_FILE = path.join(PERSIST_BASE_DIR, 'orion.db');
+// Sessão whatsapp-web.js isolada por app: pasta dedicada + clientId único (evita conflito "browser already running").
+const WWEBJS_DATA_ROOT = path.join(PERSIST_BASE_DIR, 'wwebjs-data');
+const WWEBJS_CLIENT_ID = String(process.env.WWEBJS_CLIENT_ID || 'orion-desktop').trim() || 'orion-desktop';
+if (!fs.existsSync(WWEBJS_DATA_ROOT)) {
+  fs.mkdirSync(WWEBJS_DATA_ROOT, { recursive: true });
+}
+const LOGS_DIR = path.join(PERSIST_BASE_DIR, 'logs');
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+const APP_LOG_FILE = path.join(LOGS_DIR, 'app.log');
+let latestQrBase64 = null;
+let latestQrAt = null;
+let whatsappLastEvent = 'booting';
+let whatsappLastEventAt = new Date().toISOString();
+let whatsappLastError = null;
+let whatsappDebugRecent = [];
+let whatsappClientAuthenticated = false;
+let whatsappConnectionState = 'UNKNOWN';
+let whatsappAuthenticatedAt = null;
+let whatsappMonitorStarted = false;
+
+function pushDebugLog(level, message) {
+  const entry = {
+    at: new Date().toISOString(),
+    level: String(level || 'info'),
+    message: String(message || '')
+  };
+  whatsappDebugRecent = [...whatsappDebugRecent.slice(-99), entry];
+  try {
+    fs.appendFileSync(APP_LOG_FILE, `[${entry.at}] [${entry.level.toUpperCase()}] ${entry.message}\n`);
+  } catch {}
+}
+
+function setWhatsAppEvent(eventName, extra = '') {
+  whatsappLastEvent = String(eventName || 'unknown');
+  whatsappLastEventAt = new Date().toISOString();
+  const msg = extra ? `${whatsappLastEvent} | ${extra}` : whatsappLastEvent;
+  pushDebugLog('info', `[whatsapp-event] ${msg}`);
+}
+
+function setWhatsAppError(err, context = '') {
+  const msg = String(err?.message || err || 'erro desconhecido');
+  whatsappLastError = context ? `${context}: ${msg}` : msg;
+  pushDebugLog('error', `[whatsapp-error] ${whatsappLastError}`);
+}
 
 // ========== PROMPTS DE SETOR ==========
 const promptVendas = `
 IMPORTANTE: A regra de regra_sigilo_protocolo definida em REGRAS_GLOBAIS é absoluta e sobrepõe qualquer outra instrução técnica. Se o statusPagamento for BLOQUEADO, você deve seguir o script de retenção de informação técnica sem exceções.
 
+REGRA DE OURO DE FLUXO (OBRIGATÓRIA — PRIORIDADE SOBRE OUTRAS REGRAS DE VENDAS):
+DÚVIDAS TÉCNICAS: Esclareça tudo com base no CATÁLOGO_UNIFICADO (comercial + tecnico), com autoridade.
+INTERESSE EM COMPRAR / PREÇO: Informe SKU e comercial.preco, anuncie o Kit Orion de Brinde (#OR-KIT-BRINDE) + frete grátis (REGRAS_GLOBAIS.regra_oferta_kit_orion) e ORIENTE o cliente a entrar na loja oficial, montar o carrinho e finalizar pelo checkout — é o carrinho que gera o link de pagamento e devolve o fluxo para este WhatsApp. Não prometa "gerar link aqui no chat" como substituto do carrinho.
+BLOQUEIO DE ENDEREÇO PRÉ-PAGAMENTO: Enquanto o contexto indicar que o pagamento AINDA NÃO foi confirmado (status diferente de pago/confirmado), é TERMINANTEMENTE PROIBIDO pedir nome, e-mail, rua, número, CEP, cidade, bairro, complemento ou "dados de embarque". Não peça endereço "enquanto paga" nem em paralelo ao pagamento.
+APÓS PAGAMENTO CONFIRMADO: Somente quando o status no contexto for pagamento CONFIRMADO (PAID), solicite dados de entrega — siga a REGRA DE PAGAMENTO CONFIRMADO abaixo.
+APÓS "SIM", "OK", "PODE FECHAR": Reforce o direcionamento à loja/carrinho/checkout; não liste campos de endereço. O endereço vem depois que o sistema confirmar o pagamento.
+
+TABELA OFICIAL E PRECISÃO IMEDIATA: A fonte única de preço, nome, dosagem e SKU é o JSON do CATÁLOGO_UNIFICADO (tabela oficial da LP + itens do catálogo) e o bloco MAPEAMENTO NOME DO PRODUTO → SKU no contexto deste prompt. Assim que o cliente mencionar produto+dosagem (ex.: "Tirzepatide 20", "Tirzepatide 20mg"), associe na hora: SKU #OR-2026-028, comercial.preco R$ 800,00 — sem adivinhar nem consultar "conhecimento externo". Nunca invente valores nem SKUs.
+
+TOM DE CONSULTOR DE ELITE: Menos "atendente de formulário", mais consultor estratégico. Se o pagamento já estiver confirmado e o cliente mandar endereço incompleto, complete a coleta com naturalidade. Antes do pagamento confirmado, não inicie coleta de endereço.
+
 VOCÊ É O CONSULTOR DE LOGÍSTICA DA ORION PEPTIDES.
 MANTENHA SEMPRE UM TOM PROFISSIONAL, EDUCADO E DIRETO.
 
+MENSAGENS ENXUTAS: Evite textos cansativos. Prefira poucos parágrafos curtos ou lista com "-". Objetivo primeiro; detalhe só se o cliente pedir.
+
 REGRAS DE COMPORTAMENTO:
-ACOLHIMENTO: Nunca dê o preço direto. Valide a dor/objetivo do cliente.
+ACOLHIMENTO: Na abertura, valide dor/objetivo sem parecer catálogo automático. Depois que produto E dosagem estiverem escolhidos, confira preço e SKU com confiança usando somente o CATÁLOGO_UNIFICADO.
 AUTORIDADE ORION: Mencione sempre a "pureza laboratorial" ou "padrão ouro" da Orion.
-FOLLOW-UP: NUNCA termine a mensagem de forma passiva. Termine SEMPRE devolvendo uma pergunta.
+FOLLOW-UP: NUNCA termine de forma passiva. Termine com UMA pergunta clara (pode ser gancho: "Quer comparar dosagens ou seguir para o carrinho?").
 FORMATAÇÃO WHATSAPP: Use APENAS as formatações do WhatsApp: *texto* para negrito e _texto_ para itálico. PROIBIDO USAR TAGS HTML. Para listas, use apenas o símbolo de traço (-).
 LIMITAÇÃO: Responda apenas sobre os SKUs presentes no CATÁLOGO_UNIFICADO (objeto comercial + técnico por SKU). Produto fora do catálogo? Diga que não trabalha com o item.
 Se o cliente ainda estiver com dúvidas técnicas mesmo após o início do fluxo de vendas, responda de forma simples e direta sobre o benefício do produto antes de reforçar o link do carrinho.
@@ -75,30 +157,33 @@ Se o cliente fizer uma pergunta técnica que você não sabe responder ou que ex
 const promptTecnico = `
 IMPORTANTE: A regra de regra_sigilo_protocolo definida em REGRAS_GLOBAIS é absoluta e sobrepõe qualquer outra instrução técnica. Se o statusPagamento for BLOQUEADO, você deve seguir o script de retenção de informação técnica sem exceções.
 
+TRANSIÇÃO SILENCIOSA PARA VENDAS (MANDATÓRIO):
+Se o cliente demonstrar intenção de compra, aceitar um valor/orçamento, pedir para fechar, perguntar preço para comprar, ou confirmar fechamento com termos como "Sim", "Ok", "Pode ser" em contexto de compra, responda normalmente ao cliente e inclua ao FINAL da mensagem a linha com a tag exata [VENDAS] (ou [MUDAR_PARA_VENDAS], equivalente). O cliente não deve ler explicações sobre mudança de setor.
+É proibido dizer que vai encaminhar para outro setor, departamento ou pessoa — o sistema troca para vendas automaticamente e de forma imediata.
+
 Você é o Especialista Técnico da Orion Peptides, com tom científico, sério e acessível.
 Você deve soar como um bioquímico da Orion Peptides.
+
+OBJETIVIDADE (WhatsApp): Respostas curtas e escaneáveis. Priorize 2 a 4 frases ou poucos tópicos com "-". Evite blocos longos e repetição. Entregue o núcleo da resposta já no início. Ao final, UMA pergunta-gancho para o cliente escolher o próximo passo (ex.: "Quer que eu detalhe reconstituição, comparação com outro SKU ou só os números de protocolo?"). Só aprofunde se o cliente pedir explicitamente "detalhe", "explica melhor" ou "passo a passo".
 
 FONTE ÚNICA:
 Sua ÚNICA e EXCLUSIVA fonte de informação técnica é o campo tecnico de cada SKU no CATÁLOGO_UNIFICADO, complementado pelo bloco REGRAS_GLOBAIS quando aplicável.
 Você não deve usar conhecimentos externos da internet que conflitem com nossa base.
-Se a informação estiver no catálogo, use-a com autoridade científica.
+Se a informação estiver no catálogo, use-a com autoridade científica — de forma compacta.
 
 REGRAS DE COMPORTAMENTO:
-- Seu objetivo é EDUCAR o cliente. Se ele perguntar sobre benefícios, mecanismos de ação ou por que escolher a Orion, responda de forma detalhada e persuasiva usando o CATÁLOGO_UNIFICADO.
-- Confirmar definições biológicas (como "TB-500 é Timosina") é suporte informativo, não consulta médica. Responda de forma direta usando o bloco tecnico do SKU certo.
-- Protocolo oficial Orion de reconstituição: siga REGRAS_GLOBAIS (protocolo_reconstituicao_oficial) e os campos de reconstituição do SKU em questão.
-- Se o cliente perguntar "como usar", "como misturar" ou "onde guardar", responda com autoridade técnica baseada no campo tecnico do SKU correspondente.
-- Você está PROIBIDO de dizer "não sei" ou chamar o suporte para perguntas sobre "quantas unidades usar" ou "qual o protocolo".
-- Para perguntas de protocolo/unidades, consulte o campo tecnico do SKU e responda no formato:
-"Conforme os protocolos de referência de pesquisa da Orion, a dosagem padrão é X mg, o que equivale a Y unidades na seringa U-100".
-- Sempre adicione no final da resposta: "Lembrando que este dado é para fins de referência científica".
-- Para Tirzepatide 20mg (SKU #OR-2026-028), quando o cliente perguntar "como usar" ou "qual a dose", use os números exatos do objeto tecnico deste SKU (2.5mg/semana na indução; exemplo de 25 unidades U-100 com 2ml de diluição), cite "Protocolos de Referência de Pesquisa Orion" e NÃO acione suporte humano para isso.
-- Se houver dúvida sobre desconforto local com MOTS-C (ardência/coceira), acalme o cliente informando que o "MOTS-C Sting" pode ocorrer por alguns minutos e é um efeito local esperado em alguns casos.
-- Protocolos de dosagem citados são estritamente para fins de pesquisa e referência da plataforma Orion.
-- Se a pergunta exigir dosagem médica específica para caso clínico individual, diagnóstico, ajuste terapêutico personalizado ou qualquer decisão médica, responda EXATAMENTE:
+- Eduque com clareza, mas de modo objetivo. Benefícios, mecanismo e diferenciais: resuma em poucas linhas com base no CATÁLOGO_UNIFICADO; ofereça aprofundamento via pergunta final.
+- Definições biológicas diretas (ex.: "TB-500 é Timosina"): uma ou duas frases, sem palestra.
+- Protocolo / reconstituição / armazenamento: traga só o essencial do campo tecnico do SKU; números críticos quando existirem.
+- Você está PROIBIDO de dizer "não sei" ou chamar o suporte para "quantas unidades" ou "qual o protocolo" quando a resposta estiver no catálogo e statusPagamento permitir.
+- Para protocolo/unidades (quando LIBERADO): uma frase com dosagem de referência + equivalência U-100 se aplicável; cite "Protocolos de Referência de Pesquisa Orion" de forma breve. Frase de rodapé obrigatória apenas nestes casos: "Lembrando: referência científica / pesquisa."
+- Tirzepatide 20mg (#OR-2026-028): se perguntarem dose/uso, use os números do objeto tecnico (ex.: 2.5mg/semana na indução; exemplo U-100) sem repetir o catálogo inteiro.
+- MOTS-C Sting: uma frase tranquilizando; sem texto longo.
+- Protocolos citados: fins de pesquisa/referência — não precisa repetir isso em todo parágrafo; uma menção basta quando houver números de dose.
+- Se a pergunta exigir dosagem médica para caso individual, diagnóstico ou decisão clínica, responda EXATAMENTE:
 "Essa é uma excelente pergunta técnica. Para sua segurança, vou encaminhar esse ponto agora mesmo para o nosso especialista responsável, que te dará o suporte detalhado em instantes. Um momento, por favor."
 
-SÓ use a tag [MUDAR_PARA_VENDAS] quando o cliente disser explicitamente "quero comprar", "como eu pago" ou "manda o link". NÃO mude para vendas apenas porque ele demonstrou interesse em um produto.
+Use [VENDAS] ou [MUDAR_PARA_VENDAS] sempre que houver sinal claro de fechamento ou compra (incluindo aceite após valor, "quero comprar", "manda o link", confirmações curtas de fechamento). Não omita a tag nesses casos.
 `.trim();
 
 /** Remove marcas do payload enviado a APIs externas (ex.: Gemini). Tokens são expandidos de volta no WhatsApp. */
@@ -301,6 +386,16 @@ function createDefaultSession() {
     deliveryNotified: false,
     paymentWelcomeSent: false,
     deliveryFlowClosed: false,
+    isPaused: false,
+    pausedUntil: null,
+    contactName: null,
+    phoneNumber: null,
+    phoneSource: null,
+    profilePic: null,
+    catalogLinkSentAt: null,
+    riskAlert: false,
+    riskReason: null,
+    riskAt: null,
     messageHistory: [],
     setorAtual: 'TECNICO'
   };
@@ -322,6 +417,16 @@ async function initDatabase() {
       delivery_notified INTEGER DEFAULT 0,
       payment_welcome_sent INTEGER DEFAULT 0,
       delivery_flow_closed INTEGER DEFAULT 0,
+      isPaused INTEGER DEFAULT 0,
+      pausedUntil TEXT,
+      contact_name TEXT,
+      phone_number TEXT,
+      phone_source TEXT,
+      profile_pic TEXT,
+      lp_link_sent_at TEXT,
+      risk_alert INTEGER DEFAULT 0,
+      risk_reason TEXT,
+      risk_at TEXT,
       setor_atual TEXT,
       message_history TEXT DEFAULT '[]',
       updated_at TEXT
@@ -346,7 +451,44 @@ async function initDatabase() {
       bairro TEXT,
       updated_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS stock_data (
+      sku TEXT PRIMARY KEY,
+      quantity INTEGER DEFAULT 0,
+      updated_at TEXT
+    );
   `);
+
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN isPaused INTEGER DEFAULT 0;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN pausedUntil TEXT;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN contact_name TEXT;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN phone_number TEXT;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN phone_source TEXT;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN profile_pic TEXT;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN lp_link_sent_at TEXT;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN risk_alert INTEGER DEFAULT 0;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN risk_reason TEXT;
+  `).catch(() => {});
+  await db.exec(`
+    ALTER TABLE sessions ADD COLUMN risk_at TEXT;
+  `).catch(() => {});
 }
 
 function parseMessageHistory(raw) {
@@ -374,8 +516,8 @@ async function saveSession(chatId, sessionData) {
     `INSERT INTO sessions (
       chat_id, last_order, last_link, payment_status, last_payment_id,
       delivery_notified, payment_welcome_sent, delivery_flow_closed, setor_atual,
-      message_history, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      message_history, contact_name, phone_number, phone_source, profile_pic, lp_link_sent_at, risk_alert, risk_reason, risk_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(chat_id) DO UPDATE SET
       last_order=excluded.last_order,
       last_link=excluded.last_link,
@@ -386,6 +528,14 @@ async function saveSession(chatId, sessionData) {
       delivery_flow_closed=excluded.delivery_flow_closed,
       setor_atual=excluded.setor_atual,
       message_history=excluded.message_history,
+      contact_name=COALESCE(excluded.contact_name, sessions.contact_name),
+      phone_number=COALESCE(excluded.phone_number, sessions.phone_number),
+      phone_source=COALESCE(excluded.phone_source, sessions.phone_source),
+      profile_pic=COALESCE(excluded.profile_pic, sessions.profile_pic),
+      lp_link_sent_at=COALESCE(excluded.lp_link_sent_at, sessions.lp_link_sent_at),
+      risk_alert=COALESCE(excluded.risk_alert, sessions.risk_alert),
+      risk_reason=COALESCE(excluded.risk_reason, sessions.risk_reason),
+      risk_at=COALESCE(excluded.risk_at, sessions.risk_at),
       updated_at=excluded.updated_at`,
     [
       chatId,
@@ -398,6 +548,14 @@ async function saveSession(chatId, sessionData) {
       s.deliveryFlowClosed ? 1 : 0,
       s.setorAtual || null,
       JSON.stringify(s.messageHistory),
+      s.contactName || null,
+      s.phoneNumber || null,
+      s.phoneSource || null,
+      s.profilePic || null,
+      s.catalogLinkSentAt || null,
+      s.riskAlert ? 1 : 0,
+      s.riskReason || null,
+      s.riskAt || null,
       now
     ]
   );
@@ -454,6 +612,16 @@ async function getOrCreateSession(chatId) {
     deliveryNotified: !!row.delivery_notified,
     paymentWelcomeSent: !!row.payment_welcome_sent,
     deliveryFlowClosed: !!row.delivery_flow_closed,
+    isPaused: !!row.isPaused,
+    pausedUntil: row.pausedUntil || null,
+    contactName: row.contact_name || null,
+    phoneNumber: row.phone_number || null,
+    phoneSource: row.phone_source || null,
+    profilePic: row.profile_pic || null,
+    catalogLinkSentAt: row.lp_link_sent_at || null,
+    riskAlert: !!row.risk_alert,
+    riskReason: row.risk_reason || null,
+    riskAt: row.risk_at || null,
     setorAtual: row.setor_atual || null,
     messageHistory: parseMessageHistory(row.message_history)
   };
@@ -520,6 +688,87 @@ function normalizeAdminWhatsAppId(rawId) {
   return `${onlyDigits}@c.us`;
 }
 
+function formatToPhone(id) {
+  const raw = String(id || '').trim();
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/@c\.us$/i, '')
+    .replace(/@lid$/i, '')
+    .replace(/@g\.us$/i, '')
+    .replace(/@s\.whatsapp\.net$/i, '')
+    .replace(/^chat_/i, '')
+    .replace(/[^\d]/g, '');
+  return cleaned || null;
+}
+
+async function resolveContactMetaFromMessage(msg) {
+  let phoneNumber = null;
+  let contactName = null;
+  let phoneSource = null;
+  let profilePic = null;
+
+  // Prioridade 1: msg.author/msg.from quando vierem em @c.us
+  const p1 = [msg?.author, msg?.from];
+  for (const candidate of p1) {
+    const value = String(candidate || '').trim();
+    if (/@c\.us$/i.test(value)) {
+      phoneNumber = formatToPhone(value);
+      if (phoneNumber) {
+        phoneSource = 'INFERRED';
+        break;
+      }
+    }
+  }
+
+  // Prioridade 2: msg.getContact() -> contact.number
+  try {
+    const contact = await msg.getContact();
+    if (contact) {
+      const inferredName = String(
+        contact.pushname || contact.name || contact.shortName || ''
+      ).trim();
+      contactName = inferredName || null;
+      if (!phoneNumber) {
+        const numberFromContact = formatToPhone(
+          contact.number ||
+            contact.id?._serialized ||
+            contact.id?.user ||
+            contact.userid ||
+            ''
+        );
+        if (numberFromContact) {
+          phoneNumber = numberFromContact;
+          phoneSource = 'VERIFIED';
+        }
+      }
+      try {
+        const profilePicUrl = await contact.getProfilePicUrl();
+        if (typeof profilePicUrl === 'string' && profilePicUrl.trim()) {
+          profilePic = profilePicUrl.trim();
+        }
+      } catch {
+        // Alguns usuários restringem foto; manter best-effort sem falhar fluxo.
+      }
+    }
+  } catch {
+    // best-effort: sem bloquear processamento de mensagem
+  }
+
+  // Prioridade 3: objeto bruto msg._data
+  if (!phoneNumber) {
+    const p3 = [msg?._data?.id?.participant, msg?._data?.from];
+    for (const candidate of p3) {
+      phoneNumber = formatToPhone(candidate);
+      if (phoneNumber) {
+        phoneSource = 'INFERRED';
+        break;
+      }
+    }
+  }
+
+  return { phoneNumber, contactName, phoneSource, profilePic };
+}
+
 async function notificarFernandoTransbordo(chatId, motivo) {
   const adminChatId = process.env.ADMIN_CHAT_ID;
   const alerta = `⚠️ ALERTA TRANSBORDO: O cliente ${chatId} precisa de suporte humano/técnico. Motivo: ${motivo}.`;
@@ -529,7 +778,7 @@ async function notificarFernandoTransbordo(chatId, motivo) {
       console.log(`[Transbordo] ADMIN_CHAT_ID inválido. Alerta pendente: ${alerta}`);
       return;
     }
-    await client.sendMessage(adminChatId, alerta);
+    await safeSendMessage(adminChatId, alerta, 'notificarFernandoTransbordo');
     console.log('[Transbordo] Alerta enviado ao admin.');
   } catch (err) {
     console.error('[Transbordo Error] Falha ao notificar admin:', err?.message || err);
@@ -618,7 +867,42 @@ function hasExplicitPurchaseIntent(text) {
   return (
     normalized.includes('quero comprar') ||
     normalized.includes('como eu pago') ||
-    normalized.includes('manda o link')
+    normalized.includes('manda o link') ||
+    normalized.includes('manda o pix') ||
+    normalized.includes('gera o link') ||
+    normalized.includes('gerar o link')
+  );
+}
+
+/** Afirmações curtas típicas após oferta de preço/fechamento — intenção máxima de compra. */
+function isShortPurchaseAffirmation(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 80) return false;
+  const lower = t.toLowerCase();
+  if (/^(sim|sii|ss|ok|okay|blz|beleza|pode ser|pode fechar|fechamos|isso|fecha|combinado|bora|vamos|fechado|perfeito|aceito|fecha assim)\.?$/i.test(
+    lower
+  )) {
+    return true;
+  }
+  if (/^(sim|ok)\s*,?\s*(pode|fechamos|bora)/i.test(lower)) return true;
+  if (/^(pode fechar|pode ser|fechamos|é isso)/i.test(lower)) return true;
+  return false;
+}
+
+function hasStrongPurchaseSignal(text) {
+  return hasExplicitPurchaseIntent(text) || isShortPurchaseAffirmation(text);
+}
+
+function isPendingPaymentFollowup(text) {
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) return false;
+  return (
+    /\b(ja|já)\s*paguei\b/i.test(normalized) ||
+    /\bpaguei\b/i.test(normalized) ||
+    /\bpagamento\s*(aprovou|confirmou|confirmado)\b/i.test(normalized) ||
+    /\bconfirmou\s*o\s*pagamento\b/i.test(normalized) ||
+    /\b(ta|tá|est[aá])\s*(ai|aí)\b/i.test(normalized) ||
+    /\b(tem|teve)\s*alguma\s*atualiza(c|ç)[aã]o\b/i.test(normalized)
   );
 }
 
@@ -660,32 +944,167 @@ ${texto}
   return extractDadosEntregaFallback(texto);
 }
 
+/**
+ * Áudio: transcrição pura para o pipeline de texto. Não enviar esta saída ao WhatsApp.
+ * Logs detalhados ficam no servidor (debug).
+ */
+async function transcribeAudioWithGemini(media) {
+  const prompt = `Tarefa: transcrever literalmente o áudio.
+Regras obrigatórias:
+- Responda APENAS com o texto falado (fiel ao que foi dito).
+- NÃO inclua transcrição entre aspas, NÃO use prefixos como "Transcrição:", "O cliente disse", "Entendi que".
+- NÃO descreva o áudio, NÃO analise intenção, NÃO liste tokens, NÃO use JSON ou markdown.
+- Se não houver fala inteligível, responda exatamente a palavra: VAZIO`;
+  const promptApi = scrubForExternalLLM(prompt);
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: promptApi }, { inlineData: { mimeType: media.mimetype, data: media.data } }] }]
+  });
+  const raw = (result.response?.text?.() || '').trim();
+  console.log('[Áudio] Resposta bruta Gemini (debug interno):', raw);
+  if (!raw || /^vazio$/i.test(raw)) return '';
+  return raw;
+}
+
 // ========== INICIALIZAÇÃO WHATSAPP ==========
+let whatsappClientReady = false;
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    dataPath: WWEBJS_DATA_ROOT,
+    clientId: WWEBJS_CLIENT_ID
+  }),
+  webVersionCache: {
+    type: 'remote',
+    remotePath:
+      'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1018915444-alpha.html'
+  },
   puppeteer: {
-    headless: true,
+    headless: 'new',
     args: [
-      '--no-sandbox', 
+      '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage', // <--- Resolve o engasgo de memória da Hostinger
-      '--disable-gpu'
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote'
     ]
   }
 });
 
-client.on('qr', (qr) => {
+client.on('qr', async (qr) => {
+  whatsappClientReady = false;
+  whatsappClientAuthenticated = false;
+  whatsappLastError = null;
+  setWhatsAppEvent('qr');
   console.log('🤖 ESCANEIE O QR CODE ABAIXO COM SEU WHATSAPP:');
-  qrcode.generate(qr, { small: true });
+  qrcodeTerminal.generate(qr, { small: true });
+  try {
+    latestQrBase64 = await QRCode.toDataURL(qr, { margin: 1, width: 280 });
+    latestQrAt = new Date().toISOString();
+  } catch (err) {
+    console.warn('[QR] Falha ao converter QR para Base64:', err?.message || err);
+    setWhatsAppError(err, 'qr_to_base64');
+  }
+});
+
+client.on('authenticated', async () => {
+  whatsappClientAuthenticated = true;
+  whatsappClientReady = false;
+  whatsappAuthenticatedAt = new Date().toISOString();
+  whatsappLastError = null;
+  setWhatsAppEvent('authenticated');
+  latestQrBase64 = null;
+  latestQrAt = null;
 });
 
 client.on('ready', () => {
+  whatsappClientReady = true;
+  whatsappClientAuthenticated = true;
+  whatsappLastError = null;
+  setWhatsAppEvent('ready');
+  latestQrBase64 = null;
+  latestQrAt = null;
   console.log('✅ Bot do WhatsApp conectado e pronto para vender!');
 });
+
+client.on('disconnected', () => {
+  whatsappClientReady = false;
+  whatsappClientAuthenticated = false;
+  whatsappAuthenticatedAt = null;
+  setWhatsAppEvent('disconnected');
+  latestQrBase64 = null;
+  latestQrAt = null;
+  console.log('⚠️ WhatsApp desconectado.');
+});
+
+client.on('auth_failure', (msg) => {
+  whatsappClientReady = false;
+  whatsappClientAuthenticated = false;
+  whatsappAuthenticatedAt = null;
+  const detail = typeof msg === 'string' ? msg : JSON.stringify(msg);
+  console.error('[whatsapp] auth_failure — sessão pode estar corrompida ou token inválido:', detail);
+  setWhatsAppEvent('auth_failure', detail);
+  if (msg) setWhatsAppError(msg, 'auth_failure');
+  latestQrBase64 = null;
+  latestQrAt = null;
+});
+
+client.on('loading_screen', (percent, text) => {
+  setWhatsAppEvent('loading_screen', `${percent}% ${text || ''}`.trim());
+});
+
+client.on('change_state', (state) => {
+  whatsappConnectionState = String(state || 'UNKNOWN').toUpperCase();
+  setWhatsAppEvent('change_state', whatsappConnectionState);
+  if (whatsappConnectionState === 'DISCONNECTED') {
+    whatsappClientReady = false;
+  }
+});
+
+function startWhatsAppHealthMonitor() {
+  if (whatsappMonitorStarted) return;
+  whatsappMonitorStarted = true;
+  setInterval(async () => {
+    try {
+      const rawState = await client.getState();
+      const state = String(rawState || 'UNKNOWN').toUpperCase();
+      whatsappConnectionState = state;
+    } catch (err) {
+      setWhatsAppError(err, 'monitor_getState');
+    }
+  }, 10000);
+}
 
 /** Pós-PAID: mesma cópia no handler de mensagens e no webhook Mercado Pago. */
 const MSG_BOAS_VINDAS_POS_PAGAMENTO =
   '✅ Pagamento Confirmado! Pagamento processado com sucesso em nosso Gateway Internacional. Agora, para garantirmos a agilidade no seu envio, por favor, confirme os dados para a Documentação de Embarque (Shipping Address) — Nome, Rua, Número, CEP e Cidade.';
+
+const ROTEIRO_CARRINHO_VENDAS =
+  'Para escolher seu protocolo, acesse nossa página oficial: https://green-koala-180415.hostingersite.com/ -- Após escolher, basta me mandar um "Pronto" aqui para gerarmos seu pedido e link de pagamento.';
+
+function appendRoteiroCarrinhoSeNecessario(texto) {
+  const t = String(texto || '').trim();
+  if (!t) return t;
+  if (/green-koala-180415/i.test(t)) return t;
+  return `${t}\n\n${ROTEIRO_CARRINHO_VENDAS}`.trim();
+}
+
+function isNoLidError(err) {
+  const msg = String(err?.message || err || '');
+  return /No LID for user/i.test(msg);
+}
+
+async function safeSendMessage(to, text, context = 'send') {
+  try {
+    await client.sendMessage(to, text);
+    return true;
+  } catch (err) {
+    if (isNoLidError(err)) {
+      console.warn(`[WhatsApp] Mensagem não enviada por LID inválido | context=${context} | to=${to}`);
+      return false;
+    }
+    throw err;
+  }
+}
 
 async function sendHumanizedMessage(chatId, text) {
   try {
@@ -695,15 +1114,41 @@ async function sendHumanizedMessage(chatId, text) {
     const delay = Math.floor(Math.random() * (5000 - 3000 + 1) + 3000);
     await new Promise(resolve => setTimeout(resolve, delay));
     const textoCliente = expandBrandTokensForWhatsApp(text);
-    await client.sendMessage(chatId, textoCliente);
-    await appendMessageHistory(chatId, 'assistant', textoCliente);
+    if (/green-koala-180415\.hostingersite\.com/i.test(textoCliente)) {
+      await db.run(
+        'UPDATE sessions SET lp_link_sent_at = COALESCE(lp_link_sent_at, ?), updated_at = ? WHERE chat_id = ?',
+        [new Date().toISOString(), new Date().toISOString(), chatId]
+      );
+    }
+    let sent = await safeSendMessage(chatId, textoCliente, 'sendHumanizedMessage');
+    if (!sent && /@lid$/i.test(String(chatId || ''))) {
+      const session = await getOrCreateSession(chatId);
+      const fallbackChatId = session?.phoneNumber ? `${String(session.phoneNumber).replace(/\D/g, '')}@c.us` : null;
+      if (fallbackChatId) {
+        pushDebugLog('warn', `[whatsapp-fallback] tentando envio alternativo ${chatId} -> ${fallbackChatId}`);
+        sent = await safeSendMessage(fallbackChatId, textoCliente, 'sendHumanizedMessage_fallback_cus');
+      }
+    }
+    if (sent) {
+      await appendMessageHistory(chatId, 'assistant', textoCliente);
+    } else {
+      pushDebugLog('error', `[whatsapp-send-failed] não foi possível enviar mensagem para ${chatId}`);
+    }
   } catch (err) {
     console.error('Erro ao enviar mensagem humanizada:', err);
+    setWhatsAppError(err, 'sendHumanizedMessage');
   }
 }
 
 // ========== PROCESSAMENTO DE MENSAGENS ==========
 client.on('message', async (msg) => {
+  console.log('[whatsapp message]', {
+    from: msg?.from,
+    fromMe: msg?.fromMe,
+    type: msg?.type,
+    hasBody: !!(msg?.body && String(msg.body).trim()),
+    id: msg?.id?._serialized || msg?.id
+  });
   const chatId = msg?.from || '';
   if (!chatId) return;
 
@@ -711,12 +1156,85 @@ client.on('message', async (msg) => {
   if (chatId === 'status@broadcast' || chatId.endsWith('@newsletter')) return;
 
   const rawBody = typeof msg?.body === 'string' ? msg.body : '';
-  const userMessage = rawBody.trim();
+  let userMessage = rawBody.trim();
   if (!userMessage && !msg.hasMedia) return;
 
   let session = await getOrCreateSession(chatId);
-  if (userMessage) {
-    await appendMessageHistory(chatId, 'user', userMessage);
+  const contactMeta = await resolveContactMetaFromMessage(msg);
+  if (contactMeta.phoneNumber || contactMeta.contactName || contactMeta.phoneSource || contactMeta.profilePic) {
+    session = await updateSession(chatId, {
+      phoneNumber: contactMeta.phoneNumber || session.phoneNumber || null,
+      contactName: contactMeta.contactName || session.contactName || null,
+      phoneSource: contactMeta.phoneSource || session.phoneSource || null,
+      // URL é atualizada a cada nova mensagem quando disponível (mantém foto "fresca").
+      profilePic: contactMeta.profilePic || session.profilePic || null
+    });
+  }
+  const now = Date.now();
+  const pauseUntilMs = session.pausedUntil ? new Date(session.pausedUntil).getTime() : 0;
+  if (session.isPaused && pauseUntilMs > now) {
+    const mins = Math.max(1, Math.ceil((pauseUntilMs - now) / 60000));
+    console.log(`[Pausa Bot] Silenciado para ${chatId}. Restante: ${mins} min.`);
+    return;
+  }
+  if (session.isPaused && (!pauseUntilMs || pauseUntilMs <= now)) {
+    await db.run('UPDATE sessions SET isPaused = 0, pausedUntil = NULL WHERE chat_id = ?', [chatId]);
+    session = { ...session, isPaused: false, pausedUntil: null };
+  }
+
+  // --- ÁUDIO: só transcreve (logs no servidor); resposta ao cliente = mesmo fluxo de texto abaixo ---
+  if (msg.hasMedia) {
+    const media = await msg.downloadMedia();
+    if (media && media.mimetype.includes('audio')) {
+      await sendHumanizedMessage(chatId, 'Recebi seu áudio. Um instante enquanto analiso com precisão laboratorial... 🧬');
+      try {
+        const transcricao = await transcribeAudioWithGemini(media);
+        console.log('[Áudio] Transcrição (uso interno):', transcricao || '(vazia)');
+        console.log('[Áudio] Intenção/contexto (sessão):', {
+          paymentStatus: session.paymentStatus,
+          setorAtual: session.setorAtual
+        });
+        if (!transcricao || !String(transcricao).trim()) {
+          await sendHumanizedMessage(
+            chatId,
+            'Recebi seu áudio, mas não consegui extrair o texto com clareza. Por favor, envie em texto ou grave de novo.'
+          );
+          return;
+        }
+        userMessage = userMessage ? `${userMessage}\n${transcricao.trim()}`.trim() : transcricao.trim();
+      } catch (err) {
+        console.error('[Áudio] Falha na transcrição:', err);
+        await sendHumanizedMessage(chatId, 'Recebi seu áudio, mas não consegui processar com segurança. Por favor, envie em texto.');
+        return;
+      }
+    }
+  }
+
+  if (!userMessage || !String(userMessage).trim()) return;
+
+  await appendMessageHistory(chatId, 'user', userMessage);
+
+  const riscoClinicoDetectado = deveDispararTransbordoPorRiscoClinico(userMessage);
+  if (riscoClinicoDetectado && !session.riskAlert) {
+    session = await updateSession(chatId, {
+      riskAlert: true,
+      riskReason: 'Risco clínico: gravidez/doença grave/remédio controlado',
+      riskAt: new Date().toISOString()
+    });
+    await notificarFernandoTransbordo(
+      chatId,
+      'Risco clínico identificado (gravidez/doença grave/remédio controlado). Intervenção urgente no painel.'
+    );
+  }
+
+  // Trava determinística: com pedido pendente, não regressa para "montar carrinho".
+  if (session.paymentStatus === 'PENDING' && isPendingPaymentFollowup(userMessage)) {
+    const linkExtra = session.lastLink ? `\n\nSe precisar, segue novamente o link do pagamento:\n${session.lastLink}` : '';
+    await sendHumanizedMessage(
+      chatId,
+      `Perfeito, já localizei seu pedido. No momento ele está como *aguardando confirmação* no gateway de pagamento.\n\nAssim que a aprovação cair no sistema, eu te aviso aqui automaticamente para seguir com os dados de envio.${linkExtra}`
+    );
+    return;
   }
 
   // Transição automática: perguntas de logística/comercial saem do técnico para vendas.
@@ -727,28 +1245,6 @@ client.on('message', async (msg) => {
     session = await updateSession(chatId, { setorAtual: 'VENDAS' });
     logBotEmAtendimento(chatId, 'VENDAS', 'transicao-automatica-logistica');
   }
-
-  // --- SUPORTE A ÁUDIO ---
-  if (msg.hasMedia) {
-    const media = await msg.downloadMedia();
-    if (media && media.mimetype.includes('audio')) {
-      await sendHumanizedMessage(chatId, 'Recebi seu áudio. Um instante enquanto analiso com precisão laboratorial... 🧬');
-      try {
-        const promptTranscricao = `Transcreva e entenda o áudio do cliente. ${session.paymentStatus === 'PAID' ? 'Pagamento confirmado. Solicite dados de entrega.' : ''}`;
-        const promptTranscricaoApi = scrubForExternalLLM(`${promptTranscricao}\n${GEMINI_TOKEN_INSTRUCAO}`);
-        const result = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: promptTranscricaoApi }, { inlineData: { mimeType: media.mimetype, data: media.data } }] }]
-        });
-        const textResponse = result.response?.text?.() || '';
-        await sendHumanizedMessage(chatId, textResponse);
-      } catch (err) {
-        await sendHumanizedMessage(chatId, 'Recebi seu áudio, mas não consegui processar com segurança. Por favor, envie em texto.');
-      }
-      return;
-    }
-  }
-
-  if (!userMessage) return;
 
   // Proteção de primeiro contato: cliente novo inicia em TÉCNICO por padrão.
   if (!session.setorAtual) {
@@ -801,15 +1297,19 @@ client.on('message', async (msg) => {
       deliveryNotified: false,
       paymentWelcomeSent: false,
       deliveryFlowClosed: false,
+      contactName: session.contactName || null,
+      phoneNumber: session.phoneNumber || null,
+      phoneSource: session.phoneSource || null,
+      profilePic: session.profilePic || null,
       setorAtual: 'VENDAS',
       messageHistory: []
     });
 
-    // Envia para o Admin no WhatsApp
-    const adminChatId = process.env.ADMIN_CHAT_ID;
-    if (adminChatId) {
+    // Notificação administrativa de nova venda → gerente de processo (ou admin se não configurado)
+    const gerenteProcessoChatId = process.env.GERENTE_PROCESSO_CHAT_ID || process.env.ADMIN_CHAT_ID;
+    if (gerenteProcessoChatId) {
       const adminReport = `🚨 *NOVA VENDA INICIADA!* 🚨\n\n*Cliente:* ${msg._data.notifyName || chatId}\n\n*Pedido:*\n${decodedMessage}\n\n*Link:* ${linkPagamento}`;
-      client.sendMessage(adminChatId, adminReport);
+      await safeSendMessage(gerenteProcessoChatId, adminReport, 'nova-venda-iniciada');
     }
     return;
   }
@@ -857,7 +1357,11 @@ client.on('message', async (msg) => {
                 `CEP: ${dadosDepois.cep}`,
                 `Cidade: ${dadosDepois.cidade}`
               ].join('\n');
-              client.sendMessage(adminChatId, `📦 *ENDEREÇO RECEBIDO!* Cliente: ${msg._data.notifyName || chatId}\n${enderecoFormatado}`);
+              await safeSendMessage(
+                adminChatId,
+                `📦 *ENDEREÇO RECEBIDO!* Cliente: ${msg._data.notifyName || chatId}\n${enderecoFormatado}`,
+                'endereco-recebido-admin'
+              );
             }
             await updateSession(chatId, { deliveryNotified: true });
           }
@@ -930,17 +1434,18 @@ client.on('message', async (msg) => {
     const result = await model.generateContent(promptParaApi);
     let text = result.response.text();
     if (text) {
-      if (text.includes('[MUDAR_PARA_VENDAS]')) {
-        text = text.replace('[MUDAR_PARA_VENDAS]', '').trim();
-        if (hasExplicitPurchaseIntent(userMessage)) {
-          const roteiroVendas = 'Para escolher seu protocolo, acesse nossa página oficial: https://green-koala-180415.hostingersite.com/ -- Após escolher, basta me mandar um "Pronto" aqui para gerarmos seu pedido e link de pagamento.';
-          text = `${text}\n\n${roteiroVendas}`.trim();
-          await updateSession(chatId, { setorAtual: 'VENDAS' });
-          setorAtivo = 'VENDAS';
-          logBotEmAtendimento(chatId, 'VENDAS', 'transicao-tecnico-para-vendas');
-        } else {
-          logBotEmAtendimento(chatId, 'TECNICO', 'tag-ignorada-sem-intencao-clara');
-        }
+      const tinhaTagVendas = text.includes('[MUDAR_PARA_VENDAS]') || text.includes('[VENDAS]');
+      if (tinhaTagVendas) {
+        text = text.replace(/\[MUDAR_PARA_VENDAS\]/g, '').replace(/\[VENDAS\]/g, '').trim();
+        text = appendRoteiroCarrinhoSeNecessario(text);
+        await updateSession(chatId, { setorAtual: 'VENDAS' });
+        setorAtivo = 'VENDAS';
+        logBotEmAtendimento(chatId, 'VENDAS', 'transicao-tecnico-para-vendas-tag');
+      } else if (setorAtivo === 'TECNICO' && hasStrongPurchaseSignal(userMessage)) {
+        text = appendRoteiroCarrinhoSeNecessario(text);
+        await updateSession(chatId, { setorAtual: 'VENDAS' });
+        setorAtivo = 'VENDAS';
+        logBotEmAtendimento(chatId, 'VENDAS', 'transicao-intencao-compra-sem-tag');
       }
       if (
         text.includes('Essa é uma excelente pergunta técnica. Para sua segurança, vou encaminhar esse ponto agora mesmo para o nosso especialista responsável, que te dará o suporte detalhado em instantes. Um momento, por favor.') &&
@@ -962,6 +1467,16 @@ client.on('message', async (msg) => {
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  return next();
+});
 
 app.get('/debug/session/:chatId', async (req, res) => {
   try {
@@ -1017,6 +1532,374 @@ app.get('/debug/session/:chatId', async (req, res) => {
   } catch (err) {
     console.error('[Debug Error] Falha ao consultar sessão:', err);
     return res.status(500).json({ ok: false, error: 'Falha ao consultar sessão' });
+  }
+});
+
+app.get('/api/dashboard/summary', async (req, res) => {
+  try {
+    const nowIso = new Date().toISOString();
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const startOfDayIso = startOfDay.toISOString();
+
+    const totalTodayRow = await db.get(
+      `SELECT COALESCE(SUM(value), 0) AS total
+       FROM payment_data
+       WHERE UPPER(TRIM(status)) = 'PAID'
+         AND updated_at >= ?`,
+      [startOfDayIso]
+    );
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const activeRow = await db.get(
+      `SELECT COUNT(*) AS n FROM sessions WHERE updated_at IS NOT NULL AND updated_at > ?`,
+      [since]
+    );
+    const pendingRow = await db.get(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(value), 0) AS total
+       FROM payment_data
+       WHERE UPPER(TRIM(status)) = 'PENDING'`
+    );
+    const riskAlertsRow = await db.get(
+      `SELECT COUNT(*) AS n
+       FROM sessions
+       WHERE COALESCE(risk_alert, 0) = 1`
+    );
+    const paidWithoutAddressRow = await db.get(
+      `SELECT COUNT(*) AS n
+       FROM sessions s
+       LEFT JOIN delivery_data d ON d.chat_id = s.chat_id
+       WHERE UPPER(TRIM(COALESCE(s.payment_status, ''))) = 'PAID'
+         AND (
+           TRIM(COALESCE(d.rua, '')) = '' OR
+           TRIM(COALESCE(d.numero, '')) = '' OR
+           TRIM(COALESCE(d.cep, '')) = '' OR
+           TRIM(COALESCE(d.cidade, '')) = ''
+         )`
+    );
+    const pausedRow = await db.get(
+      `SELECT COUNT(*) AS n
+       FROM sessions
+       WHERE COALESCE(isPaused, 0) = 1
+         AND (pausedUntil IS NULL OR pausedUntil > ?)`,
+      [nowIso]
+    );
+    const stockRows = await db.all(
+      `SELECT sku, quantity
+       FROM stock_data`
+    );
+    const stockBySku = Object.fromEntries(
+      (stockRows || []).map((r) => [String(r.sku || '').trim(), Number(r.quantity ?? 0)])
+    );
+    const catalogSkus = Object.keys(CATALOGO_UNIFICADO || {});
+    const lowStockSkus = catalogSkus.filter((sku) => Number(stockBySku[sku] ?? 0) <= 3).length;
+
+    return res.json({
+      ok: true,
+      totalSalesToday: Number(totalTodayRow?.total ?? 0),
+      activeConversations: Number(activeRow?.n ?? 0),
+      pendingPayments: {
+        count: Number(pendingRow?.n ?? 0),
+        totalValue: Number(pendingRow?.total ?? 0)
+      },
+      riskAlerts: Number(riskAlertsRow?.n ?? 0),
+      paidWithoutAddress: Number(paidWithoutAddressRow?.n ?? 0),
+      pausedConversations: Number(pausedRow?.n ?? 0),
+      lowStockSkus,
+      bot: {
+        online: whatsappClientReady || whatsappClientAuthenticated,
+        label: whatsappClientReady
+          ? 'Online'
+          : (whatsappClientAuthenticated ? 'Online (sessão autenticada)' : 'Offline / aguardando')
+      }
+    });
+  } catch (err) {
+    console.error('[Dashboard] summary:', err);
+    return res.status(500).json({ ok: false, error: 'Falha ao carregar resumo' });
+  }
+});
+
+app.get('/api/dashboard/orders', async (req, res) => {
+  try {
+    const rows = await db.all(
+      `SELECT
+        p.payment_id AS id,
+        s.chat_id AS chatId,
+        p.value,
+        p.status AS paymentStatus,
+        COALESCE(s.updated_at, p.updated_at) AS updatedAt,
+        COALESCE(s.isPaused, 0) AS isPaused,
+        s.pausedUntil AS pausedUntil,
+        COALESCE(NULLIF(TRIM(d.nome), ''), NULL) AS customerName,
+        COALESCE(NULLIF(TRIM(s.contact_name), ''), NULL) AS contactName,
+        COALESCE(NULLIF(TRIM(s.phone_number), ''), NULL) AS phoneNumber,
+        COALESCE(NULLIF(TRIM(s.phone_source), ''), NULL) AS phoneSource,
+        COALESCE(NULLIF(TRIM(s.profile_pic), ''), NULL) AS profilePic,
+        s.lp_link_sent_at AS catalogLinkSentAt,
+        COALESCE(s.risk_alert, 0) AS riskAlert,
+        s.risk_reason AS riskReason,
+        s.risk_at AS riskAt,
+        s.payment_status AS sessionPaymentStatus,
+        s.last_order AS lastOrder,
+        s.last_payment_id AS lastPaymentId,
+        d.rua,
+        d.numero,
+        d.cep,
+        d.cidade
+       FROM sessions s
+       LEFT JOIN delivery_data d ON d.chat_id = s.chat_id
+       LEFT JOIN payment_data p
+         ON p.chat_id = s.chat_id
+        AND p.updated_at = (
+          SELECT MAX(p2.updated_at)
+          FROM payment_data p2
+          WHERE p2.chat_id = s.chat_id
+        )
+       ORDER BY COALESCE(s.risk_alert, 0) DESC, COALESCE(s.updated_at, p.updated_at, '') DESC
+       LIMIT 200`
+    );
+    const enriched = rows.map((row) => {
+      const chatId = String(row.chatId || '').trim();
+      const digits = chatId.replace(/\D/g, '');
+      const contactNumber = row.phoneNumber || digits || null;
+      const hasOrder = !!String(row.lastOrder || '').trim() || !!String(row.lastPaymentId || '').trim();
+      const paymentStatus = String(row.sessionPaymentStatus || row.paymentStatus || '').toUpperCase().trim();
+      const hasDeliveryCore =
+        !!String(row.rua || '').trim() &&
+        !!String(row.numero || '').trim() &&
+        !!String(row.cep || '').trim() &&
+        !!String(row.cidade || '').trim();
+
+      let journeyStatusKey = 'NEW_CHAT';
+      let journeyStatusLabel = 'Novo contato';
+      if (hasOrder && paymentStatus !== 'PAID') {
+        journeyStatusKey = 'WAITING_PAYMENT';
+        journeyStatusLabel = 'Aguardando pagamento';
+      } else if (paymentStatus === 'PAID' && !hasDeliveryCore) {
+        journeyStatusKey = 'PAID';
+        journeyStatusLabel = 'Pagamento aprovado';
+      } else if (paymentStatus === 'PAID' && hasDeliveryCore) {
+        journeyStatusKey = 'READY_TO_SHIP';
+        journeyStatusLabel = 'Pronto para envio';
+      } else if (hasOrder) {
+        journeyStatusKey = 'CHECKOUT_STARTED';
+        journeyStatusLabel = 'Pedido iniciado';
+      } else if (String(row.catalogLinkSentAt || '').trim()) {
+        journeyStatusKey = 'CATALOG_SENT';
+        journeyStatusLabel = 'Escolha de produtos';
+      }
+
+      return {
+        ...row,
+        chatId,
+        customerName: row.customerName || null,
+        contactName: row.contactName || null,
+        contactNumber,
+        profilePic: row.profilePic || null,
+        waLink: contactNumber ? `https://wa.me/${contactNumber}` : null,
+        phoneVerification: contactNumber ? (row.phoneSource || 'INFERRED') : null,
+        riskAlert: Number(row.riskAlert || 0) === 1,
+        riskReason: row.riskReason || null,
+        riskAt: row.riskAt || null,
+        status: paymentStatus || null,
+        journeyStatusKey,
+        journeyStatusLabel
+      };
+    });
+    const consolidatedMap = new Map();
+    for (const item of enriched) {
+      const dedupeKey = item.contactNumber ? `phone:${item.contactNumber}` : `chat:${item.chatId}`;
+      const current = consolidatedMap.get(dedupeKey);
+      if (!current) {
+        consolidatedMap.set(dedupeKey, item);
+        continue;
+      }
+
+      const currentTs = new Date(current.updatedAt || 0).getTime();
+      const itemTs = new Date(item.updatedAt || 0).getTime();
+      const newest = itemTs >= currentTs ? item : current;
+      const oldest = itemTs >= currentTs ? current : item;
+      const currentPauseTs = new Date(current.pausedUntil || 0).getTime();
+      const itemPauseTs = new Date(item.pausedUntil || 0).getTime();
+
+      consolidatedMap.set(dedupeKey, {
+        ...newest,
+        chatId: newest.chatId || oldest.chatId,
+        id: newest.id || oldest.id,
+        lastOrder: newest.lastOrder || oldest.lastOrder,
+        lastPaymentId: newest.lastPaymentId || oldest.lastPaymentId,
+        customerName: newest.customerName || oldest.customerName || null,
+        contactName: newest.contactName || oldest.contactName || null,
+        profilePic: newest.profilePic || oldest.profilePic || null,
+        waLink: newest.waLink || oldest.waLink || null,
+        riskAlert: !!(current.riskAlert || item.riskAlert),
+        riskReason: newest.riskReason || oldest.riskReason || null,
+        riskAt: newest.riskAt || oldest.riskAt || null,
+        isPaused: Number(current.isPaused || 0) === 1 || Number(item.isPaused || 0) === 1 ? 1 : 0,
+        pausedUntil:
+          itemPauseTs >= currentPauseTs
+            ? (item.pausedUntil || current.pausedUntil || null)
+            : (current.pausedUntil || item.pausedUntil || null),
+        phoneVerification:
+          current.phoneVerification === 'VERIFIED' || item.phoneVerification === 'VERIFIED'
+            ? 'VERIFIED'
+            : (newest.phoneVerification || oldest.phoneVerification || null)
+      });
+    }
+
+    const consolidated = Array.from(consolidatedMap.values()).sort((a, b) => {
+      if (a.riskAlert !== b.riskAlert) return a.riskAlert ? -1 : 1;
+      const aTs = new Date(a.updatedAt || 0).getTime();
+      const bTs = new Date(b.updatedAt || 0).getTime();
+      return bTs - aTs;
+    });
+
+    return res.json({ ok: true, orders: consolidated });
+  } catch (err) {
+    console.error('[Dashboard] orders:', err);
+    return res.status(500).json({ ok: false, error: 'Falha ao listar pedidos' });
+  }
+});
+
+app.get('/api/dashboard/catalog', (req, res) => {
+  db.all('SELECT sku, quantity FROM stock_data')
+    .then((stockRows) => {
+      const stockBySku = Object.fromEntries(
+        (stockRows || []).map((r) => [String(r.sku || '').trim(), Number(r.quantity ?? 0)])
+      );
+      const items = Object.entries(CATALOGO_UNIFICADO).map(([sku, row]) => ({
+        sku,
+        nome: row.comercial?.nome ?? '',
+        dosagem: row.comercial?.dosagem ?? '',
+        preco: row.comercial?.preco ?? '',
+        categoria: row.comercial?.categoria ?? '',
+        stockQuantity: Number(stockBySku[sku] ?? 0)
+      }));
+      return res.json({ ok: true, items });
+    })
+    .catch((err) => {
+      console.error('[Dashboard] catalog:', err);
+      return res.status(500).json({ ok: false, error: 'Falha ao carregar catálogo' });
+    });
+});
+
+app.get('/api/whatsapp/status', (req, res) => {
+  return res.json({
+    ok: true,
+    authenticated: whatsappClientAuthenticated || whatsappClientReady,
+    ready: whatsappClientReady,
+    connectionState: whatsappConnectionState,
+    authenticatedAt: whatsappAuthenticatedAt,
+    hasQr: !!latestQrBase64,
+    qrUpdatedAt: latestQrAt,
+    lastEvent: whatsappLastEvent,
+    lastEventAt: whatsappLastEventAt,
+    lastError: whatsappLastError,
+    recentDebug: whatsappDebugRecent.slice(-10)
+  });
+});
+
+app.get('/api/whatsapp/qr', (req, res) => {
+  return res.json({
+    ok: true,
+    authenticated: whatsappClientAuthenticated || whatsappClientReady,
+    qrBase64: latestQrBase64,
+    updatedAt: latestQrAt
+  });
+});
+
+app.post('/api/whatsapp/restart', async (req, res) => {
+  try {
+    setWhatsAppEvent('restart_requested');
+    latestQrBase64 = null;
+    latestQrAt = null;
+    try {
+      await client.destroy();
+    } catch {}
+    try {
+      await client.initialize();
+    } catch (err) {
+      console.error('[WhatsApp Restart] Falha ao inicializar:', err);
+      setWhatsAppError(err, 'restart_initialize');
+    }
+    return res.json({ ok: true, restartedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[WhatsApp Restart] erro:', err);
+    setWhatsAppError(err, 'restart');
+    return res.status(500).json({ ok: false, error: 'Falha ao reiniciar WhatsApp' });
+  }
+});
+
+app.get('/api/whatsapp/logs', (req, res) => {
+  try {
+    const lines = fs.existsSync(APP_LOG_FILE)
+      ? fs.readFileSync(APP_LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-200)
+      : [];
+    return res.json({ ok: true, lines });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+app.post('/api/dashboard/stock/set', async (req, res) => {
+  try {
+    const sku = String(req.body?.sku || '').trim();
+    const quantity = Number(req.body?.quantity);
+    if (!sku || !Number.isFinite(quantity) || quantity < 0) {
+      return res.status(400).json({ ok: false, error: 'sku e quantity (>= 0) são obrigatórios' });
+    }
+    const qty = Math.floor(quantity);
+    const now = new Date().toISOString();
+    await db.run(
+      `INSERT INTO stock_data (sku, quantity, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(sku) DO UPDATE SET
+         quantity=excluded.quantity,
+         updated_at=excluded.updated_at`,
+      [sku, qty, now]
+    );
+    return res.json({ ok: true, sku, quantity: qty, updatedAt: now });
+  } catch (err) {
+    console.error('[Dashboard] stock/set:', err);
+    return res.status(500).json({ ok: false, error: 'Falha ao salvar estoque' });
+  }
+});
+
+app.post('/api/dashboard/pause-bot', async (req, res) => {
+  try {
+    const chatId = String(req.body?.chatId || '').trim();
+    const durationMinutes = Number(req.body?.durationMinutes);
+    if (!chatId || !Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+      return res.status(400).json({ ok: false, error: 'chatId e durationMinutes são obrigatórios' });
+    }
+
+    const pausedUntil = new Date(Date.now() + durationMinutes * 60000).toISOString();
+    await getOrCreateSession(chatId);
+    await db.run(
+      'UPDATE sessions SET isPaused = 1, pausedUntil = ?, updated_at = ? WHERE chat_id = ?',
+      [pausedUntil, new Date().toISOString(), chatId]
+    );
+    return res.json({ ok: true, chatId, isPaused: true, pausedUntil });
+  } catch (err) {
+    console.error('[Dashboard] pause-bot:', err);
+    return res.status(500).json({ ok: false, error: 'Falha ao pausar bot' });
+  }
+});
+
+app.post('/api/dashboard/unpause-bot', async (req, res) => {
+  try {
+    const chatId = String(req.body?.chatId || '').trim();
+    if (!chatId) {
+      return res.status(400).json({ ok: false, error: 'chatId é obrigatório' });
+    }
+    await getOrCreateSession(chatId);
+    await db.run(
+      'UPDATE sessions SET isPaused = 0, pausedUntil = NULL, updated_at = ? WHERE chat_id = ?',
+      [new Date().toISOString(), chatId]
+    );
+    return res.json({ ok: true, chatId, isPaused: false, pausedUntil: null });
+  } catch (err) {
+    console.error('[Dashboard] unpause-bot:', err);
+    return res.status(500).json({ ok: false, error: 'Falha ao reativar bot' });
   }
 });
 
@@ -1082,7 +1965,11 @@ async function handleMercadoPagoNotification(req, res) {
 
   const adminChatId = process.env.ADMIN_CHAT_ID;
   if (adminChatId) {
-    client.sendMessage(adminChatId, `💰 *PAGAMENTO APROVADO!* \nValor: R$ ${valorPago}\nID: ${mpPaymentId}`);
+    await safeSendMessage(
+      adminChatId,
+      `💰 *PAGAMENTO APROVADO!* \nValor: R$ ${valorPago}\nID: ${mpPaymentId}`,
+      'pagamento-aprovado-admin'
+    );
   }
   console.log(`[Webhook MP] Pagamento aprovado processado | paymentId=${mpPaymentId} | chatId=${chatIdFromPayment}`);
 }
@@ -1090,18 +1977,64 @@ async function handleMercadoPagoNotification(req, res) {
 app.post('/api/v1/priority-client-update', handleMercadoPagoNotification);
 
 const PORT = Number(process.env.PORT) || 3000;
+const DASHBOARD_DIST = path.join(__dirname, 'dashboard', 'dist');
+let serverInstance = null;
+
 async function startServer() {
+  setWhatsAppEvent('booting');
   await initDatabase();
   console.log(`[SQLite] Banco inicializado em ${DB_FILE}`);
 
-  app.listen(PORT, async () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
-    console.log('Iniciando o WhatsApp Web Invisível...');
-    client.initialize();
+  if (fs.existsSync(DASHBOARD_DIST)) {
+    app.use(express.static(DASHBOARD_DIST));
+    // Express 5 / path-to-regexp v6: não usar app.get('*') — ver PathError "Missing parameter name"
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api') || req.path.startsWith('/debug')) {
+        return next();
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return next();
+      }
+      if (res.headersSent) {
+        return next();
+      }
+      return res.sendFile(path.join(DASHBOARD_DIST, 'index.html'), (err) => {
+        if (err) next(err);
+      });
+    });
+    console.log(`[Dashboard] UI estática em ${DASHBOARD_DIST}`);
+  }
+
+  await new Promise((resolve, reject) => {
+    serverInstance = app.listen(PORT, async () => {
+      console.log(`Servidor rodando na porta ${PORT}`);
+      console.log('[WhatsApp] LocalAuth:', { dataPath: WWEBJS_DATA_ROOT, clientId: WWEBJS_CLIENT_ID });
+      console.log('Iniciando o WhatsApp Web Invisível...');
+      setWhatsAppEvent('initialize_called');
+      startWhatsAppHealthMonitor();
+      try {
+        await client.initialize();
+      } catch (err) {
+        console.error('[WhatsApp Init Error]:', err);
+        setWhatsAppError(err, 'start_initialize');
+      }
+      resolve();
+    });
+    serverInstance.on('error', reject);
+  });
+
+  return { app, client, server: serverInstance, port: PORT };
+}
+
+if (require.main === module) {
+  startServer().catch((err) => {
+    console.error('[Startup Error] Falha ao iniciar aplicação:', err);
+    process.exit(1);
   });
 }
 
-startServer().catch((err) => {
-  console.error('[Startup Error] Falha ao iniciar aplicação:', err);
-  process.exit(1);
-});
+module.exports = {
+  app,
+  client,
+  startServer
+};

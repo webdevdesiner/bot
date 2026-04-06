@@ -8,6 +8,16 @@ Thumbs.db
 
 # WhatsApp Web.js — sessão local (não versionar)
 .wwebjs_auth/
+wwebjs-data/
 .wwebjs_cache/
 sessions.json
 bot-orion-web.zip
+
+# Ícones gerados localmente para o instalador (icon:build)
+build/
+
+# Electron — artefatos de build (instalador .exe etc.)
+release/
+
+# Dashboard — build Vite (regenerar com npm run dashboard:build)
+dashboard/dist/

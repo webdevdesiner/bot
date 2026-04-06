@@ -1,11 +1,17 @@
 {
   "name": "bot-orion-peptides",
-  "version": "1.0.0",
+  "version": "1.0.6",
   "description": "Bot de Telegram para Orion Peptides com Gemini",
-  "main": "index.js",
+  "main": "main.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node index.js"
+    "dev": "node index.js",
+    "desktop": "electron .",
+    "icon:build": "node -e \"const fs=require('fs');const mod=require('png-to-ico');const pngToIco=mod.default||mod;(async()=>{const buf=await pngToIco('build/icon-square.png');fs.writeFileSync('build/icon.ico',buf);})();\"",
+    "desktop:dist": "npm run dashboard:build && npm run icon:build && electron-builder --win nsis",
+    "dashboard:install": "npm install --prefix dashboard",
+    "dashboard:dev": "npm run dev --prefix dashboard",
+    "dashboard:build": "npm run build --prefix dashboard"
   },
   "keywords": [
     "telegram",
@@ -20,9 +26,50 @@
     "axios": "^1.13.6",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
     "whatsapp-web.js": "^1.34.6"
+  },
+  "devDependencies": {
+    "electron": "^37.4.0",
+    "electron-builder": "^26.8.1",
+    "electron-is-dev": "^3.0.1",
+    "png-to-ico": "^3.0.1"
+  },
+  "build": {
+    "appId": "com.orion.peptides.desktop",
+    "productName": "Orion Painel",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "index.js",
+      "package.json",
+      "catalogo-unificado.js",
+      "biblioteca-tecnica-orion.js",
+      "dashboard/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env",
+        "filter": [
+          ".env"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }
