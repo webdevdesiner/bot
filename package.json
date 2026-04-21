@@ -1,6 +1,6 @@
 {
   "name": "bot-orion-peptides",
-  "version": "1.0.6",
+  "version": "1.0.18",
   "description": "Bot de Telegram para Orion Peptides com Gemini",
   "main": "main.js",
   "scripts": {
@@ -8,10 +8,12 @@
     "dev": "node index.js",
     "desktop": "electron .",
     "icon:build": "node -e \"const fs=require('fs');const mod=require('png-to-ico');const pngToIco=mod.default||mod;(async()=>{const buf=await pngToIco('build/icon-square.png');fs.writeFileSync('build/icon.ico',buf);})();\"",
-    "desktop:dist": "npm run dashboard:build && npm run icon:build && electron-builder --win nsis",
+    "vendor:puppeteer": "node scripts/vendor-puppeteer-cache.js",
+    "desktop:dist": "npm run dashboard:build && npm run icon:build && npm run vendor:puppeteer && electron-builder --win nsis",
     "dashboard:install": "npm install --prefix dashboard",
     "dashboard:dev": "npm run dev --prefix dashboard",
-    "dashboard:build": "npm run build --prefix dashboard"
+    "dashboard:build": "npm run build --prefix dashboard",
+    "sync-link": "node sync-link.js"
   },
   "keywords": [
     "telegram",
@@ -24,8 +26,12 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.6",
+    "basic-ftp": "^5.2.2",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
+    "ngrok": "^4.3.3",
+    "openai": "^6.34.0",
+    "puppeteer": "^24.40.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "sqlite": "^5.1.1",
@@ -42,6 +48,9 @@
     "appId": "com.orion.peptides.desktop",
     "productName": "Orion Painel",
     "asar": true,
+    "asarUnpack": [
+      "**/node_modules/ngrok/**"
+    ],
     "directories": {
       "output": "release"
     },
@@ -51,6 +60,7 @@
       "package.json",
       "catalogo-unificado.js",
       "biblioteca-tecnica-orion.js",
+      "sync-link.js",
       "dashboard/dist/**/*"
     ],
     "extraResources": [
@@ -59,6 +69,13 @@
         "to": ".env",
         "filter": [
           ".env"
+        ]
+      },
+      {
+        "from": "vendor/puppeteer-cache",
+        "to": "puppeteer-cache",
+        "filter": [
+          "**/*"
         ]
       }
     ],

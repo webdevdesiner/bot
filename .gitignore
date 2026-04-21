@@ -2,6 +2,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+!dashboard/.env.example
 *.db
 .DS_Store
 Thumbs.db
@@ -16,8 +17,14 @@ bot-orion-web.zip
 # Ícones gerados localmente para o instalador (icon:build)
 build/
 
+# Chrome copiado para o instalador (gerar com npm run vendor:puppeteer)
+vendor/
+
 # Electron — artefatos de build (instalador .exe etc.)
 release/
 
 # Dashboard — build Vite (regenerar com npm run dashboard:build)
 dashboard/dist/
+
+# Logs locais
+logs/

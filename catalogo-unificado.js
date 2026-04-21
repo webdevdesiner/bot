@@ -93,7 +93,7 @@ function tecnicoKitOrion() {
       agua_bacteriostatica: '10ml',
       seringas_aplicacao: '4x U-100',
       seringa_diluicao: '1x 5ml',
-      frete: 'Grátis incluso na oferta do kit (conforme bloco comercial).'
+      frete: 'Frete 100% grátis para todo o Brasil.'
     }
   };
 }
@@ -110,7 +110,8 @@ function tecnicoKitOrionBrinde() {
       'Kit de boas-vindas com insumos estéreis para reconstituição e aplicação; pensado para o cliente iniciar o protocolo com os acessórios corretos.',
     composicao: {
       ...base.composicao,
-      frete: 'Grátis incluso no pedido principal (brinde enviado junto ao produto; conforme bloco comercial).'
+      agua_bacteriostatica: '3ml (cortesia no brinde; frasco à venda: 10ml)',
+      frete: 'Frete 100% grátis para todo o Brasil (brinde enviado junto ao pedido principal).'
     }
   };
 }
@@ -161,13 +162,17 @@ const REGRAS_GLOBAIS = {
       'Protocolos de dosagem citados são estritamente para fins de pesquisa e referência da plataforma Orion.'
   },
   regra_sigilo_protocolo: {
+    quando_nao_usar_o_script:
+      'É PROIBIDO abrir a conversa ou responder a saudações ("oi", "bom dia"), indicação por amigo/clínica, ou pedidos genéricos ("quero atendimento", "gostaria de falar") com o texto de resposta_sugerida (protocolo após pagamento / link do protocolo). Nesse caso acolha e pergunte objetivo ou produto. O script de retenção só se aplica quando o cliente pede EXPLICITAMENTE detalhe técnico de reconstituição, diluição, unidades (UI), seringa U-100 ou passo a passo — e o status permitir a regra.',
     verificacao_obrigatoria:
       'Verifique sempre o campo statusPagamento enviado no contexto do prompt (STATUS DE PAGAMENTO DESTE CLIENTE).',
+    escopo_nao_confundir:
+      'BLOQUEADO refere-se APENAS ao protocolo técnico detalhado (UI, equivalências U-100, passo a passo de reconstituição/diluição). NUNCA interprete BLOQUEADO como impedimento a vendas: preços, SKUs comerciais, somar itens ao pedido antes do pagamento, alterar composição do carrinho, confirmar total, orientar checkout ou gerar/reenviar link de PAGAMENTO (Mercado Pago). O script de retenção abaixo é só para dúvidas técnicas de aplicação/reconstituição — não use para recusar checkout. Se statusPagamento for SEM_PEDIDO_EM_ABERTO (sem pagamento pendente), listar disponibilidade/catálogo e preços é sempre permitido — não use o script de sigilo nesse caso.',
     se_bloqueado: {
       proibicoes:
         'Você está terminantemente PROIBIDO de informar quantidades de unidades (UI), cálculos de seringa (U-100) ou detalhes específicos de diluição/reconstituição.',
       resposta_sugerida:
-        'Para sua segurança e precisão nos resultados, o protocolo detalhado de reconstituição e as tabelas de dosagem (unidades) são liberados automaticamente aqui no chat assim que o sistema confirmar o recebimento do seu pedido. Deseja que eu gere o link para o seu protocolo agora?'
+        'Para sua segurança e precisão nos resultados, o protocolo técnico detalhado de reconstituição e as tabelas de dosagem (unidades) são liberados automaticamente aqui no chat assim que o sistema confirmar o recebimento do seu pedido. Se a dúvida for técnica (como diluir, quantas UI), use esta linha. Se o cliente pedir link de pagamento, total ou itens do pedido, atenda o comércio normalmente — não misture com este script.'
     },
     se_liberado:
       'Forneça todas as informações técnicas, cálculos de UI e protocolos de pesquisa normalmente.'
@@ -187,15 +192,15 @@ const REGRAS_GLOBAIS = {
   },
   regra_oferta_kit_orion: {
     gatilho:
-      'Sempre que o cliente perguntar o preço de um peptídeo ou demonstrar intenção de compra, anuncie que a Orion está com uma condição especial: na compra de qualquer item, o cliente ganha inteiramente grátis o Kit Orion Completo em cortesia (SKU #OR-KIT-BRINDE — água bacteriostática + seringas).',
+      'Sempre que o cliente perguntar o preço de um peptídeo ou demonstrar intenção de compra, anuncie que a Orion está com uma condição especial: na compra de qualquer item, o cliente ganha inteiramente grátis o Kit Orion de Inicialização em cortesia (SKU #OR-KIT-BRINDE — 4 seringas de aplicação + 1 seringa de diluição + água para diluição em cortesia).',
     destaque_frete:
-      'Enfatize que o Frete Grátis é um benefício ativado pelo envio do Kit junto ao produto principal.',
+      'Enfatize que o Frete é 100% grátis para todo o Brasil.',
     argumento_pureza:
       'Reforce que utilizar as seringas corretas e a água bacteriostática da Orion garante a pureza e a eficácia do protocolo de pesquisa.',
     fluxo_obrigatorio:
       'O fechamento ocorre no site: o cliente monta o carrinho na loja oficial, finaliza o checkout e recebe o link de pagamento pelo fluxo do carrinho (que retorna a este atendimento). Não peça endereço de entrega antes do pagamento confirmado.',
     fechador:
-      "Fechador sugerido (sem pedir endereço antes de pagar): destaque o Kit Orion de brinde + frete e oriente: 'Para finalizar com segurança, acesse nossa loja, monte seu carrinho com o protocolo e finalize — o checkout gera seu link de pagamento e o sistema segue por aqui. Assim que o pagamento for confirmado, pedimos seus dados de entrega.'"
+      "Fechador sugerido (sem pedir endereço antes de pagar): destaque o Kit Orion de Inicialização em brinde + frete 100% grátis para todo o Brasil e oriente: 'Para finalizar com segurança, acesse nossa loja, monte seu carrinho com o protocolo e finalize — o checkout gera seu link de pagamento e o sistema segue por aqui. Assim que o pagamento for confirmado, pedimos seus dados de entrega.'"
   }
 };
 
@@ -204,7 +209,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Tirzepatide',
       dosagem: '20mg',
-      preco: 'R$ 800,00',
+      preco: 'R$ 750,00',
       categoria: 'Emagrecimento'
     },
     tecnico: tecnicoFromBiblioteca('tirzepatide_20mg_or_2026_028', '#OR-2026-028')
@@ -213,7 +218,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Tirzepatide',
       dosagem: '40mg',
-      preco: 'R$ 1.500,00',
+      preco: 'R$ 1.300,00',
       categoria: 'Emagrecimento'
     },
     tecnico: tecnicoFromBiblioteca('tirzepatide_40mg_or_2026_040', '#OR-2026-040')
@@ -222,7 +227,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Tirzepatide',
       dosagem: '60mg',
-      preco: 'R$ 1.900,00',
+      preco: 'R$ 1.800,00',
       categoria: 'Emagrecimento'
     },
     tecnico: tecnicoFromBiblioteca('tirzepatide_60mg_or_2026_060', '#OR-2026-060')
@@ -231,7 +236,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Tirzepatide',
       dosagem: '120mg',
-      preco: 'R$ 2.500,00',
+      preco: 'R$ 2.900,00',
       categoria: 'Emagrecimento'
     },
     tecnico: tecnicoFromBiblioteca('tirzepatide_120mg_or_2026_120', '#OR-2026-120')
@@ -249,7 +254,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Retatrutide',
       dosagem: '20mg',
-      preco: 'R$ 1.700,00',
+      preco: 'R$ 1.500,00',
       categoria: 'Emagrecimento'
     },
     tecnico: tecnicoFromBiblioteca('retatrutide_20mg_or_2026_031', '#OR-2026-020-20')
@@ -258,7 +263,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'AOD-9604',
       dosagem: '5mg',
-      preco: 'R$ 650,00',
+      preco: 'R$ 540,00',
       categoria: 'Emagrecimento'
     },
     tecnico: tecnicoFromBiblioteca('aod_9604_5mg_or_2026_005', '#OR-2026-AOD5')
@@ -294,7 +299,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'GHK-Cu',
       dosagem: '50mg',
-      preco: 'R$ 500,00',
+      preco: 'R$ 600,00',
       categoria: 'Reparação e Recovery'
     },
     tecnico: tecnicoFromBiblioteca('ghk_cu_50mg_or_2026_016', '#OR-2026-016')
@@ -303,7 +308,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'KLOW Blend (Recovery Stack)',
       dosagem: '80mg',
-      preco: 'R$ 800,00',
+      preco: 'R$ 1.100,00',
       categoria: 'Reparação e Recovery'
     },
     tecnico: tecnicoKlowBlend80mg()
@@ -312,7 +317,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'CJC-1295 + Ipamorelin',
       dosagem: '5mg + 5mg',
-      preco: 'R$ 800,00',
+      preco: 'R$ 750,00',
       categoria: 'Anti-aging e Ganho Muscular'
     },
     tecnico: tecnicoFromBiblioteca('blend_cjc_1295_ipamorelin_or_2026_008', '#OR-2026-019-CI')
@@ -330,7 +335,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'NAD+',
       dosagem: '500mg',
-      preco: 'R$ 450,00',
+      preco: 'R$ 600,00',
       categoria: 'Cognitivo e Nootrópicos'
     },
     tecnico: tecnicoNadPlus_5ml_Socia()
@@ -357,7 +362,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Selank',
       dosagem: '11mg',
-      preco: 'R$ 550,00',
+      preco: 'R$ 580,00',
       categoria: 'Cognitivo e Nootrópicos'
     },
     tecnico: tecnicoFromBiblioteca('selank_11mg_or_2026_slk11', '#OR-2026-SLK11')
@@ -366,7 +371,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Semax',
       dosagem: '11mg',
-      preco: 'R$ 550,00',
+      preco: 'R$ 580,00',
       categoria: 'Cognitivo e Nootrópicos'
     },
     tecnico: tecnicoFromBiblioteca('semax_11mg_or_2026_smx11', '#OR-2026-SMX11')
@@ -375,7 +380,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'PT-141',
       dosagem: '10mg',
-      preco: 'R$ 650,00',
+      preco: 'R$ 480,00',
       categoria: 'Performance e Metabolismo'
     },
     tecnico: tecnicoFromBiblioteca('pt_141_10mg_or_2026_pt141', '#OR-2026-PT141')
@@ -384,7 +389,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Ipamorelin',
       dosagem: '10mg',
-      preco: 'R$ 600,00',
+      preco: 'R$ 480,00',
       categoria: 'Anti-aging e Ganho Muscular'
     },
     tecnico: tecnicoFromBiblioteca('ipamorelin_10mg_or_2026_ipa10', '#OR-2026-IPA10')
@@ -393,7 +398,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'SLU-PP-332',
       dosagem: '5mg',
-      preco: 'R$ 600,00',
+      preco: 'R$ 480,00',
       categoria: 'Emagrecimento'
     },
     tecnico: tecnicoFromBiblioteca('slu_pp_332_5mg_or_2026_033_slu', '#OR-2026-SLU5', 'SLU-PP-332 (5mg)')
@@ -411,7 +416,7 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Água Bacteriostática',
       dosagem: '10ml',
-      preco: 'R$ 40,00',
+      preco: 'R$ 60,00',
       categoria: 'Suprimentos'
     },
     tecnico: tecnicoFromBiblioteca('agua_bacteriostatica_10ml_or_2026_bac10', '#OR-2026-BAC10')
@@ -443,7 +448,7 @@ const CATALOGO_UNIFICADO = {
       preco: 'R$ 0,00 (Cortesia)',
       categoria: 'Brindes e Insumos',
       descricao:
-        'BRINDE EXCLUSIVO: 01 Água Bacteriostática (10ml) + 04 seringas de aplicação (U-100) + 01 seringa de diluição (5ml) + Frete Grátis incluso no pedido principal.'
+        'BRINDE EXCLUSIVO: 01 Água Bacteriostática (3ml, cortesia) + 04 seringas de aplicação (U-100) + 01 seringa de diluição (5ml) + Frete Grátis incluso no pedido principal.'
     },
     tecnico: tecnicoKitOrionBrinde()
   }

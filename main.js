@@ -10,6 +10,7 @@ let backendRuntime = null;
 let mainWindow = null;
 let qrWindow = null;
 let statusPollTimer = null;
+let appQuitInProgress = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -253,7 +254,20 @@ function startBackend() {
   return Promise.resolve();
 }
 
-function stopBackend() {
+async function stopBackend() {
+  try {
+    if (app.isPackaged && backendRuntime) {
+      const mod = require('./index.js');
+      if (typeof mod.shutdownNgrok === 'function') {
+        await mod.shutdownNgrok();
+      }
+    } else if (backendProcess && !backendProcess.killed) {
+      await fetch(`${API_BASE}/api/dashboard/ngrok-disconnect`, { method: 'POST' });
+    }
+  } catch (_) {
+    /* túnel já encerrado ou servidor indisponível */
+  }
+
   if (backendRuntime && backendRuntime.server) {
     try {
       backendRuntime.server.close();
@@ -287,9 +301,24 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (e) => {
+  if (appQuitInProgress) return;
+  e.preventDefault();
+  appQuitInProgress = true;
   stopStatusPolling();
-  stopBackend();
+  stopBackend()
+    .catch(() => {})
+    .finally(() => {
+      app.exit(0);
+    });
+});
+
+app.on('will-quit', () => {
+  void (async () => {
+    try {
+      await require('ngrok').kill();
+    } catch (_) {}
+  })();
 });
 
 app.on('activate', async () => {

@@ -1,0 +1,28 @@
+SKU;Produto;Dosagem;Categoria;Preco_atual_sistema;Preco_real_preencher
+#OR-2026-028;Tirzepatide;20mg;Emagrecimento;R$ 750,00;
+#OR-2026-040;Tirzepatide;40mg;Emagrecimento;R$ 1.300,00;
+#OR-2026-060;Tirzepatide;60mg;Emagrecimento;R$ 1.800,00;
+#OR-2026-120;Tirzepatide;120mg;Emagrecimento;R$ 2.900,00;
+#OR-2026-025;Retatrutide;10mg;Emagrecimento;R$ 1.100,00;
+#OR-2026-020-20;Retatrutide;20mg;Emagrecimento;R$ 1.500,00;
+#OR-2026-AOD5;AOD-9604;5mg;Emagrecimento;R$ 540,00;
+#OR-2026-HGH15;HGH FRAG;15mg;Emagrecimento;R$ 750,00;
+#OR-2026-SLU5;SLU-PP-332;5mg;Emagrecimento;R$ 480,00;
+#OR-2026-021;BPC-157;10mg;Reparação e Recovery;R$ 600,00;
+#OR-2026-020;TB-500;10mg;Reparação e Recovery;R$ 600,00;
+#OR-2026-021-BT;BPC-157 + TB-500;5mg + 5mg;Reparação e Recovery;R$ 800,00;
+#OR-2026-016;GHK-Cu;50mg;Reparação e Recovery;R$ 600,00;
+#OR-2026-KL80;KLOW Blend (Recovery Stack);80mg;Reparação e Recovery;R$ 1.100,00;
+#OR-2026-SS10;SS-31;10mg;Reparação e Recovery;R$ 550,00;
+#OR-2026-019-CI;CJC-1295 + Ipamorelin;5mg + 5mg;Anti-aging e Ganho Muscular;R$ 750,00;
+#OR-2026-015;Tesamorelin;10mg;Anti-aging e Ganho Muscular;R$ 650,00;
+#OR-2026-IPA10;Ipamorelin;10mg;Anti-aging e Ganho Muscular;R$ 480,00;
+#OR-2026-018;NAD+;500mg;Cognitivo e Nootrópicos;R$ 600,00;
+#OR-2026-017;MOTS-C;40mg;Cognitivo e Nootrópicos;R$ 1.200,00;
+#OR-2026-SLK11;Selank;11mg;Cognitivo e Nootrópicos;R$ 580,00;
+#OR-2026-SMX11;Semax;11mg;Cognitivo e Nootrópicos;R$ 580,00;
+#OR-2026-PT141;PT-141;10mg;Performance e Metabolismo;R$ 480,00;
+#OR-2026-BAC10;Água Bacteriostática;10ml;Suprimentos;R$ 60,00;
+#OR-2026-014;Água Estéril;10ml;Suprimentos;R$ 40,00;
+#OR-KIT-COMPLETO;Kit Orion (Insumos Completos);Kit p/ 1 Frasco;Acessórios e Insumos;R$ 49,90;
+#OR-KIT-BRINDE;Kit Orion de Boas-Vindas (Cortesia);Kit Completo p/ 1 Frasco;Brindes e Insumos;R$ 0,00 (Cortesia);
