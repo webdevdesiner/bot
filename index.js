@@ -527,22 +527,13 @@ function detectClienteSolicitouCancelamentoPedido(text) {
   return false;
 }
 
-async function tryClienteCancelarPedidoPendente(chatId, session) {
+/**
+ * Libera estoque reservado, remove reserva MP e zera PENDING na sessão. Sem mensagem ao cliente.
+ * Usado ao trocar de produto com pedido anterior em aberto, ou pelo fluxo explícito de cancelamento.
+ */
+async function releasePendingCheckoutResources(chatId, session) {
   const pay = String(session?.paymentStatus || '').toUpperCase().trim();
-  if (pay === 'PAID') {
-    await sendHumanizedMessage(
-      chatId,
-      'Seu pagamento já foi confirmado no sistema, então não consigo cancelar o pedido automaticamente por aqui. Se precisar ajustar algo nesse estágio, peça ao atendimento humano.'
-    );
-    return true;
-  }
-  if (pay !== 'PENDING') {
-    await sendHumanizedMessage(
-      chatId,
-      'Não encontrei um pedido *aguardando pagamento* para cancelar. Se quiser montar um protocolo novo, é só me dizer o que precisa.'
-    );
-    return true;
-  }
+  if (pay !== 'PENDING') return { ok: true };
 
   const catalogRuntime = await getRuntimeCatalog();
   const preferenceId = String(session?.lastPaymentId || '').trim();
@@ -577,22 +568,21 @@ async function tryClienteCancelarPedidoPendente(chatId, session) {
     .filter((it) => it.sku && it.qty > 0);
 
   if (normalized.length === 0) {
-    await sendHumanizedMessage(
-      chatId,
-      'Entendi que quer cancelar, mas não consegui identificar os itens desse pedido com segurança. Peça a um atendente humano para conferir o estoque e o link do Mercado Pago.'
-    );
-    return true;
+    return {
+      ok: false,
+      errorMessage:
+        'Não consegui identificar os itens do pedido anterior com segurança. Peça a um atendente humano ou envie *cancelar o pedido* e monte o protocolo de novo.'
+    };
   }
 
   try {
     await restoreReservedStock(normalized);
   } catch (err) {
     console.error('[Cancel] Falha ao restaurar estoque:', err);
-    await sendHumanizedMessage(
-      chatId,
-      'Tive um problema ao devolver o estoque automaticamente. Chame o suporte humano para confirmar o cancelamento.'
-    );
-    return true;
+    return {
+      ok: false,
+      errorMessage: 'Tive um problema ao devolver o estoque do pedido anterior. Chame o suporte humano para ajustar.'
+    };
   }
 
   if (preferenceId) {
@@ -614,7 +604,32 @@ async function tryClienteCancelarPedidoPendente(chatId, session) {
     checkoutSnoozedUntil: null
   });
 
-  pushDebugLog('info', `[cancel] cliente ${chatId} cancelou PENDING; estoque devolvido: ${JSON.stringify(normalized)}`);
+  pushDebugLog('info', `[checkout-release] PENDING liberado chat=${chatId} itens=${JSON.stringify(normalized)}`);
+  return { ok: true };
+}
+
+async function tryClienteCancelarPedidoPendente(chatId, session) {
+  const pay = String(session?.paymentStatus || '').toUpperCase().trim();
+  if (pay === 'PAID') {
+    await sendHumanizedMessage(
+      chatId,
+      'Seu pagamento já foi confirmado no sistema, então não consigo cancelar o pedido automaticamente por aqui. Se precisar ajustar algo nesse estágio, peça ao atendimento humano.'
+    );
+    return true;
+  }
+  if (pay !== 'PENDING') {
+    await sendHumanizedMessage(
+      chatId,
+      'Não encontrei um pedido *aguardando pagamento* para cancelar. Se quiser montar um protocolo novo, é só me dizer o que precisa.'
+    );
+    return true;
+  }
+
+  const released = await releasePendingCheckoutResources(chatId, session);
+  if (!released.ok) {
+    await sendHumanizedMessage(chatId, released.errorMessage || 'Não consegui cancelar o pedido automaticamente.');
+    return true;
+  }
 
   await sendHumanizedMessage(
     chatId,
@@ -631,7 +646,8 @@ function computeOrderTotalFromDemand(orderDemand, catalogRuntime) {
     if (!sku || qty <= 0) continue;
     const priceRaw = catalogRuntime?.[sku]?.comercial?.precoOriginal ?? catalogRuntime?.[sku]?.comercial?.preco;
     const unit = parsePriceToNumber(priceRaw);
-    if (!Number.isFinite(unit) || unit <= 0) return NaN;
+    if (!Number.isFinite(unit) || unit < 0) return NaN;
+    if (unit === 0) continue;
     total += unit * qty;
   }
   return total;
@@ -664,8 +680,25 @@ async function processarCheckoutEstruturado(chatId, orderMessage, session, optio
     decodedMessage = decodedMessage.split(sku).join(`*${name}*`);
   }
 
+  // Segundo pedido / troca de produto: com link anterior ainda pendente, libera estoque e MP antes de gerar novo checkout.
+  if (
+    session.paymentStatus === 'PENDING' &&
+    session.lastLink &&
+    String(session.lastOrder || '').trim() !== String(decodedMessage || '').trim() &&
+    Object.keys(orderDemand).length > 0
+  ) {
+    pushDebugLog('info', `[checkout] troca de pedido (PENDING anterior) chat=${chatId}`);
+    const released = await releasePendingCheckoutResources(chatId, session);
+    if (!released.ok) {
+      return { ok: false, errorMessage: released.errorMessage };
+    }
+    session = await getOrCreateSession(chatId);
+  }
+
   if (session.paymentStatus === 'PENDING' && session.lastOrder === decodedMessage && session.lastLink) {
-    return { ok: true, reusedPending: true, linkPagamento: session.lastLink, decodedMessage };
+    const link = session.lastLink;
+    // Mesmo link do pedido já pendente — expor invoiceUrl para todos os chamadores (antes só linkPagamento existia e checkout.invoiceUrl virava undefined na mensagem).
+    return { ok: true, reusedPending: true, linkPagamento: link, invoiceUrl: link, decodedMessage };
   }
 
   if (Object.keys(orderDemand).length === 0) {
@@ -773,6 +806,16 @@ async function processarCheckoutEstruturado(chatId, orderMessage, session, optio
     session: nextSession
   };
 }
+
+/** URL do checkout MP: só retorna string se for link http(s) válido (evita enviar "undefined" ao cliente). */
+function paymentCheckoutUrl(checkout) {
+  const u = checkout?.invoiceUrl ?? checkout?.linkPagamento;
+  const s = typeof u === 'string' ? u.trim() : '';
+  return /^https?:\/\//i.test(s) ? s : '';
+}
+
+const MSG_CHECKOUT_SEM_LINK =
+  'Consegui registrar seu pedido, mas o link de pagamento não foi gerado corretamente aqui. Por favor, envie *sim* ou peça *link de pagamento* de novo que eu tento na sequência. Se repetir, chame o atendimento humano.';
 
 async function getCatalogPriceOverrides() {
   const rows = await db.all('SELECT sku, price FROM catalog_price_data');
@@ -2600,6 +2643,43 @@ function mergeDadosEntrega(atual, parcial) {
   return next;
 }
 
+/** Últimas mensagens do cliente (histórico) para extrair endereço mesmo se a msg atual for só "oi" ou se uma msg anterior foi mal roteada (ex.: FAQ de frete). */
+function buildTextForDeliveryExtraction(session) {
+  const arr = Array.isArray(session?.messageHistory) ? session.messageHistory : [];
+  const userLines = [];
+  for (let i = 0; i < arr.length; i += 1) {
+    if (String(arr[i]?.role || '').toLowerCase() === 'user') {
+      const t = String(arr[i]?.text || '').trim();
+      if (t) userLines.push(t);
+    }
+  }
+  return userLines.slice(-8).join('\n').slice(0, 2500);
+}
+
+/** Preenche campos quando o cliente manda tudo numa linha sem rótulos ("Rua X n 30 bairro Cidade ES cep ..."). */
+function extractEnderecoHeuristicoLinhaUnica(text) {
+  const out = { nome: '', rua: '', numero: '', cep: '', cidade: '', bairro: '' };
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return out;
+
+  const cepM = t.match(/\b(\d{5}-?\d{3})\b/);
+  if (cepM) {
+    const d = cepM[1].replace(/\D/g, '');
+    out.cep = d.length === 8 ? `${d.slice(0, 5)}-${d.slice(5)}` : cepM[1];
+  }
+
+  const bloco = t.match(
+    /\b(rua|av\.?|avenida)\s+(.+?)\s+n\.?[ºo°]?\s*(\d+)\s+(.+?)\s+(Vila\s+Velha|Vitória|Serra|Cariacica|Guarapari)\s+(?:ES\s*)?(?:cep\s*)?/i
+  );
+  if (bloco) {
+    out.rua = `${bloco[1]} ${bloco[2]}`.replace(/\s+/g, ' ').trim();
+    out.numero = String(bloco[3] || '').trim();
+    out.bairro = String(bloco[4] || '').trim();
+    out.cidade = bloco[5].replace(/\s+/g, ' ').trim();
+  }
+  return out;
+}
+
 function extractDadosEntregaFallback(text) {
   const normalized = String(text || '');
   const out = { nome: '', rua: '', numero: '', cep: '', cidade: '', bairro: '' };
@@ -3231,6 +3311,17 @@ async function sendWithFallback(chatId, text, context = 'send') {
   return sent;
 }
 
+/** Remove artefatos tipo "Link: undefined" quando valor JS ausente vazou para string (ex.: prompt com lastLink vazio). */
+function sanitizeCustomerMessageUndefinedArtifacts(raw) {
+  return String(raw || '')
+    .replace(/\b(link|url)\s*:\s*undefined\b/gi, '')
+    .replace(/:\s*undefined\b/g, ':')
+    .replace(/https?:\/\/undefined\b/gi, '')
+    .replace(/(?:^|\n)\s*undefined\s*(?=\n|$)/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function sendHumanizedMessage(chatId, text, options = {}) {
   const force = !!options?.force;
   try {
@@ -3249,7 +3340,7 @@ async function sendHumanizedMessage(chatId, text, options = {}) {
     if (WHATSAPP_SEND_TYPING) {
       await chat.sendStateTyping();
     }
-    const textoCliente = expandBrandTokensForWhatsApp(text);
+    const textoCliente = expandBrandTokensForWhatsApp(sanitizeCustomerMessageUndefinedArtifacts(text));
     // Quando o typing estiver desligado, simula resposta humana com pausa proporcional ao texto.
     await waitMs(buildHumanizedDelayMs(textoCliente));
     if (/green-koala-180415\.hostingersite\.com/i.test(textoCliente)) {
@@ -3601,10 +3692,16 @@ client.on('message', async (msg) => {
       );
       return;
     }
+    const payUrlEarly = paymentCheckoutUrl(checkout);
+    if (!payUrlEarly) {
+      pushDebugLog('error', `[checkout] DIRECT_ASSIST sim sem URL chat=${chatId}`);
+      await sendHumanizedMessage(chatId, MSG_CHECKOUT_SEM_LINK);
+      return;
+    }
 
     await sendHumanizedMessage(
       chatId,
-      `Ótimo! Aqui está o seu link de pagamento oficial para ${productLabel}: ${checkout.invoiceUrl}`
+      `Ótimo! Aqui está o seu link de pagamento oficial para ${productLabel}: ${payUrlEarly}`
     );
     return;
   }
@@ -3708,10 +3805,16 @@ client.on('message', async (msg) => {
       );
       return;
     }
+    const payUrlDirect = paymentCheckoutUrl(checkout);
+    if (!payUrlDirect) {
+      pushDebugLog('error', `[checkout-direct] ok sem URL chat=${chatId} sku=${skuDetected}`);
+      await sendHumanizedMessage(chatId, MSG_CHECKOUT_SEM_LINK);
+      return;
+    }
     const priceText = product?.comercial?.precoOriginal || product?.comercial?.preco || '';
     await sendHumanizedMessage(
       chatId,
-      `Perfeito! Pedido direto liberado com estoque confirmado para ${productLabel} (${skuDetected})${priceText ? ` por ${priceText}` : ''}.\n\nSegue seu link de pagamento seguro:\n${checkout.invoiceUrl}\n\nVocê mantém o brinde do Kit Orion e frete grátis no protocolo.`
+      `Perfeito! Pedido direto liberado com estoque confirmado para ${productLabel} (${skuDetected})${priceText ? ` por ${priceText}` : ''}.\n\nSegue seu link de pagamento seguro:\n${payUrlDirect}\n\nVocê mantém o brinde do Kit Orion e frete grátis no protocolo.`
     );
     pushDebugLog('info', `[checkout-direct] link MP enviado para ${chatId} sku=${skuDetected} paymentId=${checkout.paymentId || 'n/a'}`);
     return;
@@ -3792,7 +3895,12 @@ client.on('message', async (msg) => {
   }
 
   // Política comercial fixa: frete sempre grátis em todo o Brasil.
-  if (!msg?.fromMe && detectShippingQuestion(userMessage)) {
+  // Não interceptar quando já pagou: mensagens com "cep" no endereço acionavam isto e o bot nunca chegava na extração de entrega (PAID).
+  if (
+    !msg?.fromMe &&
+    detectShippingQuestion(userMessage) &&
+    String(session?.paymentStatus || '').toUpperCase().trim() !== 'PAID'
+  ) {
     await sendHumanizedMessage(chatId, buildShippingPolicyReply());
     return;
   }
@@ -3814,8 +3922,26 @@ client.on('message', async (msg) => {
   logBotEmAtendimento(chatId, session.setorAtual || 'TECNICO', 'entrada');
 
   // --- INTERCEPTADOR DE CARRINHO ---
+  // Antes: exigia "TOTAL" na mensagem — clientes copiam só itens + SKUs e o link nunca gerava.
+  // Agora: "NOVO PROTOCOLO" + ("TOTAL" OU SKUs válidos + intenção clara de pagamento).
   const normalizedMessage = userMessage.toUpperCase();
-  if (normalizedMessage.includes('NOVO PROTOCOLO') && normalizedMessage.includes('TOTAL')) {
+  let runStructuredCartCheckout = false;
+  if (normalizedMessage.includes('NOVO PROTOCOLO')) {
+    if (normalizedMessage.includes('TOTAL')) {
+      runStructuredCartCheckout = true;
+    } else {
+      const catalogProbe = await getRuntimeCatalog();
+      const demandProbe = extractOrderSkuDemand(userMessage, catalogProbe);
+      const hasSkus = Object.keys(demandProbe).length > 0;
+      const payIntent =
+        hasSkus &&
+        /\b(quero realizar|pagamento seguro|realizar o pagamento|realizar pagamento|fechar o pedido|pagar agora|gerar (o )?link|link de pagamento)\b/i.test(
+          userMessage
+        );
+      if (payIntent) runStructuredCartCheckout = true;
+    }
+  }
+  if (runStructuredCartCheckout) {
     const checkout = await processarCheckoutEstruturado(chatId, userMessage, session, {
       resetHistory: true,
       notifyAdmin: true,
@@ -3830,13 +3956,25 @@ client.on('message', async (msg) => {
       return;
     }
     if (checkout.reusedPending) {
+      const payReuse = paymentCheckoutUrl(checkout);
+      if (!payReuse) {
+        pushDebugLog('error', `[checkout] interceptador reused sem URL chat=${chatId}`);
+        await sendHumanizedMessage(chatId, MSG_CHECKOUT_SEM_LINK);
+        return;
+      }
       await sendHumanizedMessage(
         chatId,
-        `Já identifiquei esse mesmo pedido como *aguardando pagamento*.\n\nSegue seu link novamente:\n${checkout.linkPagamento}`
+        `Já identifiquei esse mesmo pedido como *aguardando pagamento*.\n\nSegue seu link novamente:\n${payReuse}`
       );
       return;
     }
-    const respostaCheckout = `Excelente escolha! Seu protocolo foi recebido e os itens já estão reservados. 🧬\n\nGeramos um link de pagamento seguro exclusivo para o seu pedido. Você pode pagar via Pix ou Cartão aqui:\n\n${checkout.invoiceUrl}\n\nAssim que o pagamento for aprovado, o sistema me avisa por aqui!`;
+    const payUrlCart = paymentCheckoutUrl(checkout);
+    if (!payUrlCart) {
+      pushDebugLog('error', `[checkout] interceptador sem URL chat=${chatId}`);
+      await sendHumanizedMessage(chatId, MSG_CHECKOUT_SEM_LINK);
+      return;
+    }
+    const respostaCheckout = `Excelente escolha! Seu protocolo foi recebido e os itens já estão reservados. 🧬\n\nGeramos um link de pagamento seguro exclusivo para o seu pedido. Você pode pagar via Pix ou Cartão aqui:\n\n${payUrlCart}\n\nAssim que o pagamento for aprovado, o sistema me avisa por aqui!`;
     await sendHumanizedMessage(chatId, respostaCheckout);
     return;
   }
@@ -3863,8 +4001,18 @@ client.on('message', async (msg) => {
     }
 
     if (!cadastroEntregaJaConcluido) {
-      const extraidos = await extractDadosEntregaComGemini(userMessage, dadosAntes);
-      const dadosDepois = mergeDadosEntrega(dadosAntes, extraidos);
+      const textoEntrega = buildTextForDeliveryExtraction(session);
+      let extraidos = await extractDadosEntregaComGemini(textoEntrega, dadosAntes);
+      let dadosDepois = mergeDadosEntrega(dadosAntes, extraidos);
+      const faltamAposGemini = getMissingDeliveryFields(dadosDepois);
+      if (faltamAposGemini.length > 0) {
+        const fb = extractDadosEntregaFallback(textoEntrega);
+        dadosDepois = mergeDadosEntrega(dadosDepois, fb);
+      }
+      // Heurística extra: uma linha tipo "Rua X n 30 ... Vila Velha ES cep 00000-000" sem rótulos
+      if (getMissingDeliveryFields(dadosDepois).length > 0 && /\b\d{5}-?\d{3}\b/.test(textoEntrega)) {
+        dadosDepois = mergeDadosEntrega(dadosDepois, extractEnderecoHeuristicoLinhaUnica(textoEntrega));
+      }
 
       const camposNovos = CAMPOS_ENTREGA.filter((campo) => !String(dadosAntes[campo] || '').trim() && String(dadosDepois[campo] || '').trim());
       if (camposNovos.length > 0) {
@@ -3922,7 +4070,11 @@ client.on('message', async (msg) => {
     console.warn('[Chat Warning] Falha ao obter chat/typing. Mensagem será processada sem typing:', err?.message || err);
   }
 
-  const contextoPedido = session.lastOrder ? `\n--- PEDIDO ATUAL ---\nItens: ${session.lastOrder}\nLink: ${session.lastLink}` : '';
+  const contextoPedido = session.lastOrder
+    ? `\n--- PEDIDO ATUAL ---\nItens: ${session.lastOrder}${
+        session.lastLink ? `\nLink de pagamento (use só se o cliente pedir o link): ${session.lastLink}` : ''
+      }`
+    : '';
   const dadosEntregaContexto = session.dadosEntrega
     ? `\n--- DADOS DE ENTREGA (PARCIAL) ---\n${JSON.stringify(session.dadosEntrega)}`
     : '';
@@ -4015,10 +4167,16 @@ Aplique REGRAS_GLOBAIS.regra_sigilo_protocolo conforme o significado acima (não
           );
           return;
         }
+        const payUrlGemini = paymentCheckoutUrl(checkout);
+        if (!payUrlGemini) {
+          pushDebugLog('error', `[checkout] Gemini [LINK_PAGAMENTO] sem URL chat=${chatId} sku=${sku}`);
+          await sendHumanizedMessage(chatId, MSG_CHECKOUT_SEM_LINK);
+          return;
+        }
         const priceText = product?.comercial?.precoOriginal || product?.comercial?.preco || '';
         await sendHumanizedMessage(
           chatId,
-          `Perfeito! Pedido direto liberado para ${productLabel}${priceText ? ` por ${priceText}` : ''}.\n\nSegue seu link de pagamento seguro:\n${checkout.invoiceUrl}`
+          `Perfeito! Pedido direto liberado para ${productLabel}${priceText ? ` por ${priceText}` : ''}.\n\nSegue seu link de pagamento seguro:\n${payUrlGemini}`
         );
         return;
       }
@@ -4547,6 +4705,23 @@ app.get('/api/dashboard/orders', async (req, res) => {
       const itemPauseTs = new Date(item.pausedUntil || 0).getTime();
 
       const mergedShippingStatus = newest.shippingStatus || oldest.shippingStatus || null;
+      const lastMsgA = newest.lastCustomerMessageAt;
+      const lastMsgB = oldest.lastCustomerMessageAt;
+      const lastMsgTsA = new Date(lastMsgA || 0).getTime();
+      const lastMsgTsB = new Date(lastMsgB || 0).getTime();
+      const validLastMsgA = Number.isFinite(lastMsgTsA) && lastMsgTsA > 0;
+      const validLastMsgB = Number.isFinite(lastMsgTsB) && lastMsgTsB > 0;
+      const mergedLastCustomerMessageAt =
+        !validLastMsgA && !validLastMsgB
+          ? null
+          : !validLastMsgA
+            ? lastMsgB
+            : !validLastMsgB
+              ? lastMsgA
+              : lastMsgTsA >= lastMsgTsB
+                ? lastMsgA
+                : lastMsgB;
+
       consolidatedMap.set(dedupeKey, {
         ...newest,
         chatId: newest.chatId || oldest.chatId,
@@ -4556,6 +4731,7 @@ app.get('/api/dashboard/orders', async (req, res) => {
         customerName: newest.customerName || oldest.customerName || null,
         contactName: newest.contactName || oldest.contactName || null,
         profilePic: newest.profilePic || oldest.profilePic || null,
+        lastCustomerMessageAt: mergedLastCustomerMessageAt,
         waLink: newest.waLink || oldest.waLink || null,
         riskAlert: !!(current.riskAlert || item.riskAlert),
         riskReason: newest.riskReason || oldest.riskReason || null,

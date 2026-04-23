@@ -416,7 +416,8 @@ const CATALOGO_UNIFICADO = {
     comercial: {
       nome: 'Água Bacteriostática',
       dosagem: '10ml',
-      preco: 'R$ 60,00',
+      preco: 'R$ 0,00',
+      precoOriginal: 'R$ 0,00',
       categoria: 'Suprimentos'
     },
     tecnico: tecnicoFromBiblioteca('agua_bacteriostatica_10ml_or_2026_bac10', '#OR-2026-BAC10')
