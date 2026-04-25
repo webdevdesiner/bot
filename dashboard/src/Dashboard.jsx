@@ -1562,6 +1562,12 @@ export default function Dashboard() {
             </p>
             <p className="mt-1 text-xs text-zinc-500">Silenciadas por intervenção humana</p>
           </Card>
+          <Card title="Conversas totais">
+            <p className="text-3xl font-bold tabular-nums text-sky-300">
+              {loading ? '—' : summary?.totalConversations ?? 0}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">Total real de conversas registradas</p>
+          </Card>
           <Card title="SKUs com estoque baixo">
             <p className="text-3xl font-bold tabular-nums text-orange-300">
               {loading ? '—' : summary?.lowStockSkus ?? 0}

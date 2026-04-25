@@ -122,7 +122,15 @@ const HUMAN_CHAT_CMD_PAUSE = process.env.HUMAN_CHAT_CMD_PAUSE || '#assumir';
 const HUMAN_CHAT_CMD_RESUME = process.env.HUMAN_CHAT_CMD_RESUME || '#liberar';
 const OPERACOES_CHAT_ID = String(process.env.OPERACOES_CHAT_ID || '').trim();
 const ADMIN_CHAT_IDS_RAW = String(process.env.ADMIN_CHAT_IDS || '').trim();
+const SALES_START_CHAT_IDS_RAW = String(process.env.SALES_START_CHAT_IDS || '').trim();
 const WHATSAPP_SEND_TYPING = String(process.env.WHATSAPP_SEND_TYPING || '0').trim() === '1';
+
+/** Perguntas espontâneas de cliente (sobrescreva via .env se os links mudarem). */
+const ORION_SOCIAL_INSTAGRAM_URL =
+  String(process.env.ORION_SOCIAL_INSTAGRAM_URL || '').trim() ||
+  'https://www.instagram.com/p/DXA8GRJkcYA/?igsh=NjN3YTBoMXI3a3F6';
+const ORION_SOCIAL_TIKTOK_URL =
+  String(process.env.ORION_SOCIAL_TIKTOK_URL || '').trim() || 'https://vt.tiktok.com/ZS9FfuBfW/';
 
 const CAMPOS_ENTREGA = ['nome', 'rua', 'numero', 'cep', 'cidade', 'bairro'];
 const CAMPOS_OBRIGATORIOS_ENTREGA = ['nome', 'rua', 'numero', 'cep', 'cidade'];
@@ -788,7 +796,7 @@ async function processarCheckoutEstruturado(chatId, orderMessage, session, optio
     messageHistory: options?.resetHistory ? [] : session.messageHistory || []
   });
 
-  const stakeholderTargets = getStakeholderAlertTargets();
+  const stakeholderTargets = getStakeholderSalesStartTargets();
   if (options?.notifyAdmin && stakeholderTargets.length > 0) {
     const adminReport = `🚨 *NOVA VENDA INICIADA* 🚨\n\n*Cliente:* ${options?.notifyName || session?.contactName || chatId}\n*Telefone:* ${session?.phoneNumber || 'N/A'}\n*Chat:* ${chatId}\n*Payment/Pref ID:* ${paymentId || 'N/A'}\n\n*Pedido:*\n${decodedMessage}\n\n*Link:* ${invoiceUrl}`;
     for (const targetId of stakeholderTargets) {
@@ -2132,6 +2140,22 @@ function getStakeholderAlertTargets() {
   return out;
 }
 
+/** Destinatários exclusivos para "venda iniciada" (sem canal de operações). */
+function getStakeholderSalesStartTargets() {
+  const base = SALES_START_CHAT_IDS_RAW
+    ? SALES_START_CHAT_IDS_RAW.split(',').map((s) => s.trim())
+    : [process.env.ADMIN_CHAT_ID || ''];
+  const out = [];
+  const seen = new Set();
+  for (const raw of base) {
+    const normalized = normalizeAdminWhatsAppId(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
 function normalizeDigits(raw) {
   return String(raw || '').replace(/\D/g, '');
 }
@@ -2720,20 +2744,6 @@ function hasExplicitPurchaseIntent(text) {
   const asksCatalog =
     /\b(catalogo|catalogo completo|site|todos os produtos|lista de produtos|ver tudo|mostrar tudo|carrinho)\b/.test(normalized);
   if (asksCatalog && /\bmanda o link\b/.test(normalized)) return false;
-  const intentKeywords = [
-    'sim',
-    'quero',
-    'manda',
-    'pix',
-    'cartao',
-    'cartão',
-    'credito',
-    'credido',
-    'gerar',
-    'faz',
-    'vou querer'
-  ];
-  const hasKeyword = intentKeywords.some((k) => normalized.includes(k));
   const typoCardCredit = /\bcart\w*\b.*\bcred\w*\b/.test(normalized);
   return (
     normalized.includes('quero comprar') ||
@@ -2745,9 +2755,15 @@ function hasExplicitPurchaseIntent(text) {
     normalized.includes('pagar no pix') ||
     normalized.includes('pagar no cartao') ||
     normalized.includes('pagar no cartão') ||
+    normalized.includes('quero fechar') ||
+    normalized.includes('pode fechar') ||
+    normalized.includes('fechar pedido') ||
+    normalized.includes('finalizar pedido') ||
+    normalized.includes('quero pagar') ||
+    normalized.includes('quero o link de pagamento') ||
+    normalized.includes('enviar link de pagamento') ||
     normalized.includes('link de pagamento') ||
-    typoCardCredit ||
-    hasKeyword
+    typoCardCredit
   );
 }
 
@@ -2836,11 +2852,11 @@ function shouldProceedDirectCheckoutFromMessage(text, session = null) {
   if (!normalized) return false;
   if (detectTechnicalProtocolQuestion(normalized)) return false;
   if (detectCatalogBrowseIntent(normalized) || detectProductDiscoveryIntent(normalized)) return false;
+  const checkoutState = String(session?.checkoutState || '').toUpperCase().trim();
+  const inDirectAssist = checkoutState === 'DIRECT_ASSIST';
   return (
     hasExplicitPurchaseIntent(normalized) ||
-    isShortPurchaseAffirmation(normalized) ||
-    isDirectCheckoutConfirmation(normalized) ||
-    isPermissiveDirectAssistConfirmation(normalized, session)
+    ((isShortPurchaseAffirmation(normalized) || isDirectCheckoutConfirmation(normalized)) && inDirectAssist)
   );
 }
 
@@ -2925,7 +2941,43 @@ function isPendingPaymentFollowup(text) {
   );
 }
 
+/**
+ * Resposta com links oficiais quando o cliente pede Instagram, TikTok ou redes em geral.
+ * Retorna null se a mensagem não for sobre isso.
+ */
+function buildSocialMediaReply(rawMessage) {
+  const n = String(rawMessage || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  if (!n.trim()) return null;
+
+  const wantsIg = /\binstagram\b|\binsta\b/.test(n);
+  const wantsTt = /\btiktok\b|tik[\s-]?tok/.test(n);
+  const wantsGeneric =
+    /\bredes?\s+sociais\b/.test(n) ||
+    /\brede\s+social\b/.test(n) ||
+    /\bno\s+instagram\b/.test(n) ||
+    /\bno\s+tiktok\b/.test(n) ||
+    /\bdo\s+instagram\b/.test(n) ||
+    /\bdo\s+tiktok\b/.test(n) ||
+    /\b(voces|vcs)\s+no\s+(instagram|insta|tik|tiktok)\b/.test(n);
+
+  if (!wantsIg && !wantsTt && !wantsGeneric) return null;
+
+  if (wantsIg && wantsTt) {
+    return `Aqui estão nossos canais:\nInstagram: ${ORION_SOCIAL_INSTAGRAM_URL}\nTikTok: ${ORION_SOCIAL_TIKTOK_URL}`;
+  }
+  if (wantsIg) return `Nosso Instagram: ${ORION_SOCIAL_INSTAGRAM_URL}`;
+  if (wantsTt) return `Nosso TikTok: ${ORION_SOCIAL_TIKTOK_URL}`;
+  return `Aqui estão nossas redes:\nInstagram: ${ORION_SOCIAL_INSTAGRAM_URL}\nTikTok: ${ORION_SOCIAL_TIKTOK_URL}`;
+}
+
 async function buildDeterministicFallbackReply(userMessage, session) {
+  const social = buildSocialMediaReply(userMessage);
+  if (social) return social;
+
   const text = String(userMessage || '')
     .toLowerCase()
     .normalize('NFD')
@@ -3647,6 +3699,16 @@ client.on('message', async (msg) => {
     }
   }
 
+  // Redes sociais: resposta imediata com links oficiais (Instagram / TikTok), conforme o pedido.
+  if (!msg?.fromMe) {
+    const socialMsg = buildSocialMediaReply(userMessage);
+    if (socialMsg) {
+      pushDebugLog('info', `[social] resposta determinística | chat=${chatId}`);
+      await sendHumanizedMessage(chatId, socialMsg);
+      return;
+    }
+  }
+
   // Interceptação total do "sim" no checkout direto: não passa pela IA.
   const checkoutStateNow = String(session?.checkoutState || '').trim().toUpperCase();
   const userMessageLowerDirect = String(userMessage || '').toLowerCase().trim();
@@ -4117,6 +4179,13 @@ statusPagamento: ${statusPagamento}
 Aplique REGRAS_GLOBAIS.regra_sigilo_protocolo conforme o significado acima (não trate SEM_PEDIDO_EM_ABERTO como BLOQUEADO).
 `;
 
+  const socialContexto = `
+--- REDES SOCIAIS ORION (use APENAS se o cliente pedir Instagram, Insta, TikTok, "rede(s) social" ou canais) ---
+Instagram: ${ORION_SOCIAL_INSTAGRAM_URL}
+TikTok: ${ORION_SOCIAL_TIKTOK_URL}
+Regras: se o cliente pedir só Instagram/Insta, envie somente a URL do Instagram. Se pedir só TikTok, somente a do TikTok. Se pedir redes em geral ou ambas, pode enviar as duas, uma por linha. Não invente outras URLs. No WhatsApp, use URL pura (sem markdown).
+`.trim();
+
   const prompt = `
   --- BASE DE DADOS ---
   ${catalogoUnificadoContexto}
@@ -4125,6 +4194,7 @@ Aplique REGRAS_GLOBAIS.regra_sigilo_protocolo conforme o significado acima (não
   ${contextoPedido}
   ${dadosEntregaContexto}
   ${contextoStatusPagamentoCliente}
+  ${socialContexto}
   ${historicoRecenteContexto}
   ${instrucaoPosCadastroConcluido}
   --- STATUS ---
@@ -4498,6 +4568,7 @@ app.get('/api/dashboard/summary', async (req, res) => {
       `SELECT COUNT(*) AS n FROM sessions WHERE updated_at IS NOT NULL AND updated_at > ?`,
       [since]
     );
+    const totalConversationsRow = await db.get(`SELECT COUNT(*) AS n FROM sessions`);
     const pendingRow = await db.get(
       `SELECT COUNT(*) AS n, COALESCE(SUM(value), 0) AS total
        FROM payment_data
@@ -4553,6 +4624,7 @@ app.get('/api/dashboard/summary', async (req, res) => {
       ok: true,
       totalSalesToday: Number(totalTodayRow?.total ?? 0),
       activeConversations: Number(activeRow?.n ?? 0),
+      totalConversations: Number(totalConversationsRow?.n ?? 0),
       pendingPayments: {
         count: Number(pendingRow?.n ?? 0),
         totalValue: Number(pendingRow?.total ?? 0)
