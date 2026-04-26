@@ -118,6 +118,14 @@ const WEBHOOK_INVALID_ALERT_COOLDOWN_MS = Math.max(
   10 * 60 * 1000,
   Number(process.env.WEBHOOK_INVALID_ALERT_COOLDOWN_MS || 6 * 60 * 60 * 1000)
 );
+const DASHBOARD_ORDERS_LIMIT_DEFAULT = Math.max(
+  200,
+  Math.floor(Number(process.env.DASHBOARD_ORDERS_LIMIT_DEFAULT || 5000))
+);
+const DASHBOARD_ORDERS_LIMIT_MAX = Math.max(
+  DASHBOARD_ORDERS_LIMIT_DEFAULT,
+  Math.floor(Number(process.env.DASHBOARD_ORDERS_LIMIT_MAX || 10000))
+);
 const HUMAN_CHAT_CMD_PAUSE = process.env.HUMAN_CHAT_CMD_PAUSE || '#assumir';
 const HUMAN_CHAT_CMD_RESUME = process.env.HUMAN_CHAT_CMD_RESUME || '#liberar';
 const OPERACOES_CHAT_ID = String(process.env.OPERACOES_CHAT_ID || '').trim();
@@ -4650,6 +4658,14 @@ app.get('/api/dashboard/summary', async (req, res) => {
 
 app.get('/api/dashboard/orders', async (req, res) => {
   try {
+    const limitRaw = Number(req.query.limit);
+    const orderLimit = Math.max(
+      1,
+      Math.min(
+        DASHBOARD_ORDERS_LIMIT_MAX,
+        Number.isFinite(limitRaw) ? Math.floor(limitRaw) : DASHBOARD_ORDERS_LIMIT_DEFAULT
+      )
+    );
     const rows = await db.all(
       `SELECT
         p.payment_id AS id,
@@ -4692,7 +4708,7 @@ app.get('/api/dashboard/orders', async (req, res) => {
           WHERE p2.chat_id = s.chat_id
         )
        ORDER BY COALESCE(s.risk_alert, 0) DESC, COALESCE(s.updated_at, p.updated_at, '') DESC
-       LIMIT 200`
+       LIMIT ${orderLimit}`
     );
     const enriched = rows.map((row) => {
       const chatId = String(row.chatId || '').trim();
